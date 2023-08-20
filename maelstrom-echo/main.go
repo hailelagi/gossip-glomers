@@ -23,6 +23,7 @@ func main() {
 		body["type"] = "echo_ok"
 
 		// Echo the original message back with the updated message type.
+
 		return n.Reply(msg, body)
 	})
 
