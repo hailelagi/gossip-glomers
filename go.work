@@ -1,0 +1,7 @@
+go 1.20
+
+use (
+	./maelstrom-broadcast
+	./maelstrom-echo
+	./maelstrom-unique-ids
+)
