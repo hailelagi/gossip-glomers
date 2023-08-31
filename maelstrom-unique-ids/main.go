@@ -14,7 +14,6 @@ import (
 
 func main() {
 	n := maelstrom.NewNode()
-	logId := strconv.FormatInt(rand.Int63n(100), 10)
 
 	n.Handle("generate", func(msg maelstrom.Message) error {
 		var body map[string]any
@@ -23,7 +22,8 @@ func main() {
 		}
 
 		body["type"] = "generate_ok"
-		body["id"] = genSnowFlake(logId, n.ID())
+		// body["id"] = genUUID()
+		body["id"] = genNaiveUUID(n.ID())
 
 		return n.Reply(msg, body)
 	})
@@ -35,23 +35,28 @@ func main() {
 }
 
 // Solution one, use a UUID with a very large key space (2 ** 128 - 1)
+// UUID's use a more sophisticated version the naive version below
+// https://datatracker.ietf.org/doc/html/rfc4122
 func genUUID() string {
 	return uuid.NewString()
 }
 
-// Solution two, use a UUID with a very large key space
-func genSnowFlake(logID string, nodeID string) string {
-	sequenceId := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	return nodeID + sequenceId + logID
+// Solution two, unique non-monotonically, not synced increasing function
+// The clock can skew here but that's okay for this challenge
+// it's also difficult to impose true order because the requestID
+// is random and doesn't know which timestamp came first.
+// But it's good enough :)
+func genNaiveUUID(nodeID string) int64 {
+	requestID := strconv.FormatInt(rand.Int63n(100), 10)
+	sequenceId := strconv.FormatInt(time.Now().UnixMicro(), 10)
+	originId := nodeID[1:]
 
-	// if id, err := strconv.ParseInt(sequenceId+logID, 10, 64); err != nil {
-	// 	return
-	// } else {
-	// 	return id
-	// }
+	identity := originId + requestID + sequenceId
 
-}
-
-func consistentHashRing() {
-
+	if id, err := strconv.ParseInt(identity, 10, 64); err != nil {
+		log.Fatal(err)
+		return 0
+	} else {
+		return id
+	}
 }
