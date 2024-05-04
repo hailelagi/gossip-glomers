@@ -25,7 +25,15 @@ func main() {
 	n := maelstrom.NewNode()
 
 	// The value is always an integer and it is unique for each message from Maelstrom
-	var store []int64
+	var store []any
+
+	n.Handle("topology", func(msg maelstrom.Message) error {
+		// TODO: diy yourself a topology of known 'logical' nodes that are discoverable
+		res := make(map[string]any)
+		res["type"] = "topology_ok"
+
+		return n.Reply(msg, res)
+	})
 
 	// gossip/pubsub init
 	n.Handle("broadcast", func(msg maelstrom.Message) error {
@@ -35,7 +43,7 @@ func main() {
 		}
 
 		// Store the message in body["message"]
-		store = append(store, body["message"].(int64))
+		store = append(store, body["message"])
 		body["type"] = "broadcast_ok"
 
 		for _, node := range n.NodeIDs() {
@@ -44,7 +52,9 @@ func main() {
 			}
 		}
 
-		return nil
+		// ack
+		delete(body, "message")
+		return n.Reply(msg, body)
 	})
 
 	n.Handle("read", func(msg maelstrom.Message) error {
@@ -57,12 +67,6 @@ func main() {
 		body["messages"] = store
 
 		return n.Reply(msg, body)
-	})
-
-	n.Handle("topology", func(msg maelstrom.Message) error {
-		res := make(map[string]interface{})
-		res["type"] = "topology_ok"
-		return n.Reply(msg, res)
 	})
 
 	// Execute the node's message loop. This will run until STDIN is closed.
