@@ -9,11 +9,11 @@ import (
 )
 
 /*
-further reading - theory/explaination key word "Broadcast alogrithms", production systems "gossip protocol":
+theory/explaination overall concept family "Broadcast alogrithms", distributed algorithm: "gossip protocol":
 - https://www.cl.cam.ac.uk/teaching/2122/ConcDisSys/dist-sys-notes.pdf
 - https://www.youtube.com/watch?v=77qpCahU3fo
 
-indepth:
+read more:
 van Steen & Tanenbaum: https://www.distributed-systems.net/index.php/books/ds4/
 
 DDIA:
@@ -21,11 +21,18 @@ Cassandra and Riak take a different approach: they use a gossip protocol among t
 in cluster state. Requests can be sent to any node, and that node forwards them to the appropriate node for the requested partition
 */
 
+/*
+type Store struct {
+	// The value is always an integer and it is unique for each message from Maelstrom
+	store []any
+	mu    sync.RWMutex
+}
+*/
+
+var store []any
+
 func main() {
 	n := maelstrom.NewNode()
-
-	// The value is always an integer and it is unique for each message from Maelstrom
-	var store []any
 
 	n.Handle("topology", func(msg maelstrom.Message) error {
 		// TODO: diy yourself a topology of known 'logical' nodes that are discoverable
@@ -35,7 +42,6 @@ func main() {
 		return n.Reply(msg, res)
 	})
 
-	// gossip/pubsub init
 	n.Handle("broadcast", func(msg maelstrom.Message) error {
 		var body map[string]any
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
@@ -46,9 +52,10 @@ func main() {
 		store = append(store, body["message"])
 		body["type"] = "broadcast_ok"
 
+		// gossip to peers
 		for _, node := range n.NodeIDs() {
 			if node != n.ID() {
-				n.Send(node, body)
+				n.Send(node, body["message"])
 			}
 		}
 
