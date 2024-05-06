@@ -29,9 +29,11 @@ type Store struct {
 }
 
 var store Store
+var wg sync.WaitGroup
 
 func main() {
 	n := maelstrom.NewNode()
+	// results := make(chan error, len(n.NodeIDs()))
 
 	n.Handle("topology", func(msg maelstrom.Message) error {
 		// TODO: diy yourself a topology of known 'logical' nodes that are discoverable
@@ -53,8 +55,8 @@ func main() {
 		key := body["message"]
 
 		exists := false
-
 		store.mu.RLock()
+
 		for _, v := range store.msgs {
 			if key == v {
 				exists = true
@@ -74,12 +76,18 @@ func main() {
 			store.msgs = append(store.msgs, key)
 			store.mu.Unlock()
 
-			// gossip to peers
-			for _, node := range n.NodeIDs() {
-				if node != n.ID() {
-					n.Send(node, body)
+			for _, dest := range n.NodeIDs() {
+				if dest != n.ID() {
+					wg.Add(1)
+
+					go func(dest string) {
+						defer wg.Done()
+						n.Send(dest, body)
+					}(dest)
 				}
 			}
+
+			wg.Wait()
 
 			// ack
 			if msg_id == nil {
