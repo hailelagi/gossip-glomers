@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"sync"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
@@ -21,25 +22,24 @@ Cassandra and Riak take a different approach: they use a gossip protocol among t
 in cluster state. Requests can be sent to any node, and that node forwards them to the appropriate node for the requested partition
 */
 
-/*
 type Store struct {
 	// The value is always an integer and it is unique for each message from Maelstrom
-	store []any
-	mu    sync.RWMutex
+	msgs []any
+	mu   sync.RWMutex
 }
-*/
 
-var store []any
+var store Store
 
 func main() {
 	n := maelstrom.NewNode()
 
 	n.Handle("topology", func(msg maelstrom.Message) error {
 		// TODO: diy yourself a topology of known 'logical' nodes that are discoverable
-		res := make(map[string]any)
-		res["type"] = "topology_ok"
+		// this allows us to to more efficient send messages
+		var body = make(map[string]any)
+		body["type"] = "topology_ok"
 
-		return n.Reply(msg, res)
+		return n.Reply(msg, body)
 	})
 
 	n.Handle("broadcast", func(msg maelstrom.Message) error {
@@ -48,20 +48,53 @@ func main() {
 			return err
 		}
 
-		// Store the message in body["message"]
-		store = append(store, body["message"])
-		body["type"] = "broadcast_ok"
+		msg_id := body["msg_id"]
+		delete(body, "msg_id")
+		key := body["message"]
 
-		// gossip to peers
-		for _, node := range n.NodeIDs() {
-			if node != n.ID() {
-				n.Send(node, body["message"])
+		exists := false
+
+		store.mu.RLock()
+		for _, v := range store.msgs {
+			if key == v {
+				exists = true
+				break
 			}
 		}
+		store.mu.RUnlock()
 
-		// ack
-		delete(body, "message")
-		return n.Reply(msg, body)
+		if exists {
+			// ack
+			body["type"] = "broadcast_ok"
+			delete(body, "message")
+			return n.Reply(msg, body)
+		} else {
+			// store locally
+			store.mu.Lock()
+			store.msgs = append(store.msgs, key)
+			store.mu.Unlock()
+
+			// gossip to peers
+			for _, node := range n.NodeIDs() {
+				if node != n.ID() {
+					n.Send(node, body)
+				}
+			}
+
+			// ack
+			if msg_id == nil {
+				return nil
+			} else {
+				body["type"] = "broadcast_ok"
+				delete(body, "message")
+				return n.Reply(msg, body)
+			}
+
+		}
+	})
+
+	n.Handle("broadcast_ok", func(msg maelstrom.Message) error {
+		return nil
 	})
 
 	n.Handle("read", func(msg maelstrom.Message) error {
@@ -70,8 +103,11 @@ func main() {
 			return err
 		}
 
+		store.mu.RLock()
+		defer store.mu.RUnlock()
+
 		body["type"] = "read_ok"
-		body["messages"] = store
+		body["messages"] = store.msgs
 
 		return n.Reply(msg, body)
 	})
