@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"os"
@@ -38,7 +39,6 @@ type Session struct {
 
 func (s *Session) topologyHandler(msg maelstrom.Message) error {
 	// TODO: diy yourself a topology of known 'logical' nodes that are discoverable
-	// this allows us to to more efficient send messages
 	var body = make(map[string]any)
 	body["type"] = "topology_ok"
 
@@ -65,19 +65,21 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 	var body map[string]any
 	var store = s.store
 	n := s.node
-	wg := s.wg
 
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
 
 	key := body["message"].(float64)
+
+	store.Lock()
 	_, exists := store.set[key]
 
 	if !exists {
 		store.set[key] = true
 		store.msgs = append(store.msgs, key)
 	}
+	store.Unlock()
 
 	if exists {
 		body["type"] = "broadcast_ok"
@@ -87,28 +89,28 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 	} else {
 		for _, dest := range n.NodeIDs() {
 			if dest != n.ID() {
-				wg.Add(1)
+				s.wg.Add(1)
 
 				go func(dest string) {
-					defer wg.Done()
-					err := n.Send(dest, body)
-
+					defer s.wg.Done()
+					ctx := context.Background()
+					_, err := n.SyncRPC(ctx, dest, body)
 					if err != nil {
-						for i := 1; i <= 5; i++ {
-							err := n.Send(dest, body)
-							if err == nil {
-								return
-							}
-							time.Sleep(time.Duration(i+1) * time.Second)
-						}
+						for i := 1; i < 10; i++ {
+							_, err = n.SyncRPC(ctx, dest, body)
 
-						return
+							if err == nil {
+								break
+							}
+
+							time.Sleep(time.Duration(i) * time.Second)
+						}
 					}
 				}(dest)
 			}
 		}
 
-		wg.Wait()
+		s.wg.Wait()
 
 		// ack
 		if body["msg_id"] == nil {
