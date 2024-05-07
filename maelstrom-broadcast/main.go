@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
@@ -82,7 +83,19 @@ func main() {
 
 					go func(dest string) {
 						defer wg.Done()
-						n.Send(dest, body)
+						err := n.Send(dest, body)
+
+						if err != nil {
+							for i := 1; i <= 5; i++ {
+								err := n.Send(dest, body)
+								if err == nil {
+									return
+								}
+								time.Sleep(time.Duration(i+1) * time.Second)
+							}
+
+							return
+						}
 					}(dest)
 				}
 			}
