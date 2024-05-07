@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"os"
 	"sync"
-	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
@@ -93,19 +91,7 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 
 				go func(dest string) {
 					defer s.wg.Done()
-					ctx := context.Background()
-					_, err := n.SyncRPC(ctx, dest, body)
-					if err != nil {
-						for i := 1; i < 10; i++ {
-							_, err = n.SyncRPC(ctx, dest, body)
-
-							if err == nil {
-								break
-							}
-
-							time.Sleep(time.Duration(i) * time.Second)
-						}
-					}
+					n.Send(dest, body)
 				}(dest)
 			}
 		}
