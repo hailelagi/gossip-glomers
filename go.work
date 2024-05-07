@@ -4,4 +4,5 @@ use (
 	./maelstrom-broadcast
 	./maelstrom-echo
 	./maelstrom-unique-ids
+	./maelstrom-g-counter
 )
