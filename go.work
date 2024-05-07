@@ -5,4 +5,5 @@ use (
 	./maelstrom-echo
 	./maelstrom-unique-ids
 	./maelstrom-g-counter
+	./maelstrom-kafka
 )
