@@ -24,113 +24,113 @@ in cluster state. Requests can be sent to any node, and that node forwards them 
 */
 
 type Store struct {
-	// The value is always an integer and it is unique for each message from Maelstrom
-	msgs []any
-	mu   sync.RWMutex
+	// The value is always an integer and it is unique for each message from maelstrom
+	set  map[float64]bool
+	msgs []float64
+	sync.RWMutex
 }
 
-var store Store
-var wg sync.WaitGroup
+type Session struct {
+	node  *maelstrom.Node
+	store *Store
+	wg    sync.WaitGroup
+}
+
+func (s *Session) topologyHandler(msg maelstrom.Message) error {
+	// TODO: diy yourself a topology of known 'logical' nodes that are discoverable
+	// this allows us to to more efficient send messages
+	var body = make(map[string]any)
+	body["type"] = "topology_ok"
+
+	return s.node.Reply(msg, body)
+
+}
+
+func (s *Session) readHandler(msg maelstrom.Message) error {
+	var body map[string]any
+	if err := json.Unmarshal(msg.Body, &body); err != nil {
+		return err
+	}
+
+	s.store.RLock()
+	defer s.store.RUnlock()
+
+	body["type"] = "read_ok"
+	body["messages"] = s.store.msgs
+
+	return s.node.Reply(msg, body)
+}
+
+func (s *Session) broadcastHandler(msg maelstrom.Message) error {
+	var body map[string]any
+	var store = s.store
+	n := s.node
+	wg := s.wg
+
+	if err := json.Unmarshal(msg.Body, &body); err != nil {
+		return err
+	}
+
+	key := body["message"].(float64)
+	_, exists := store.set[key]
+
+	if !exists {
+		store.set[key] = true
+		store.msgs = append(store.msgs, key)
+	}
+
+	if exists {
+		body["type"] = "broadcast_ok"
+		delete(body, "message")
+
+		return s.node.Reply(msg, body)
+	} else {
+		for _, dest := range n.NodeIDs() {
+			if dest != n.ID() {
+				wg.Add(1)
+
+				go func(dest string) {
+					defer wg.Done()
+					err := n.Send(dest, body)
+
+					if err != nil {
+						for i := 1; i <= 5; i++ {
+							err := n.Send(dest, body)
+							if err == nil {
+								return
+							}
+							time.Sleep(time.Duration(i+1) * time.Second)
+						}
+
+						return
+					}
+				}(dest)
+			}
+		}
+
+		wg.Wait()
+
+		// ack
+		if body["msg_id"] == nil {
+			return nil
+		} else {
+			body["type"] = "broadcast_ok"
+			delete(body, "message")
+			return s.node.Reply(msg, body)
+		}
+
+	}
+}
 
 func main() {
 	n := maelstrom.NewNode()
-	// results := make(chan error, len(n.NodeIDs()))
+	s := &Session{node: n, store: &Store{set: map[float64]bool{}, msgs: []float64{}}}
 
-	n.Handle("topology", func(msg maelstrom.Message) error {
-		// TODO: diy yourself a topology of known 'logical' nodes that are discoverable
-		// this allows us to to more efficient send messages
-		var body = make(map[string]any)
-		body["type"] = "topology_ok"
-
-		return n.Reply(msg, body)
-	})
-
-	n.Handle("broadcast", func(msg maelstrom.Message) error {
-		var body map[string]any
-		if err := json.Unmarshal(msg.Body, &body); err != nil {
-			return err
-		}
-
-		msg_id := body["msg_id"]
-		delete(body, "msg_id")
-		key := body["message"]
-
-		exists := false
-		store.mu.RLock()
-
-		for _, v := range store.msgs {
-			if key == v {
-				exists = true
-				break
-			}
-		}
-		store.mu.RUnlock()
-
-		if exists {
-			// ack
-			body["type"] = "broadcast_ok"
-			delete(body, "message")
-			return n.Reply(msg, body)
-		} else {
-			// store locally
-			store.mu.Lock()
-			store.msgs = append(store.msgs, key)
-			store.mu.Unlock()
-
-			for _, dest := range n.NodeIDs() {
-				if dest != n.ID() {
-					wg.Add(1)
-
-					go func(dest string) {
-						defer wg.Done()
-						err := n.Send(dest, body)
-
-						if err != nil {
-							for i := 1; i <= 5; i++ {
-								err := n.Send(dest, body)
-								if err == nil {
-									return
-								}
-								time.Sleep(time.Duration(i+1) * time.Second)
-							}
-
-							return
-						}
-					}(dest)
-				}
-			}
-
-			wg.Wait()
-
-			// ack
-			if msg_id == nil {
-				return nil
-			} else {
-				body["type"] = "broadcast_ok"
-				delete(body, "message")
-				return n.Reply(msg, body)
-			}
-
-		}
-	})
-
+	n.Handle("topology", s.topologyHandler)
+	n.Handle("read", s.readHandler)
+	n.Handle("broadcast", s.broadcastHandler)
 	n.Handle("broadcast_ok", func(msg maelstrom.Message) error {
 		return nil
-	})
-
-	n.Handle("read", func(msg maelstrom.Message) error {
-		var body map[string]any
-		if err := json.Unmarshal(msg.Body, &body); err != nil {
-			return err
-		}
-
-		store.mu.RLock()
-		defer store.mu.RUnlock()
-
-		body["type"] = "read_ok"
-		body["messages"] = store.msgs
-
-		return n.Reply(msg, body)
 	})
 
 	// Execute the node's message loop. This will run until STDIN is closed.
