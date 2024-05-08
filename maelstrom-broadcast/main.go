@@ -34,7 +34,6 @@ type Store struct {
 type Session struct {
 	node  *maelstrom.Node
 	store *Store
-	wg    sync.WaitGroup
 }
 
 type Retry struct {
@@ -69,6 +68,7 @@ func (s *Session) readHandler(msg maelstrom.Message) error {
 }
 
 func (s *Session) broadcastHandler(msg maelstrom.Message) error {
+	var wg sync.WaitGroup
 	var body map[string]any
 	var store = s.store
 	n := s.node
@@ -97,13 +97,13 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 	} else {
 		for _, dest := range n.NodeIDs() {
 			if dest != n.ID() {
-				s.wg.Add(1)
+				wg.Add(1)
 
 				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Second))
 				defer cancel()
 
 				go func(dest string) {
-					defer s.wg.Done()
+					defer wg.Done()
 					_, err := n.SyncRPC(ctx, dest, body)
 
 					if err == nil {
@@ -116,7 +116,7 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 			}
 		}
 
-		s.wg.Wait()
+		wg.Wait()
 
 		go func() {
 			r := <-retries
