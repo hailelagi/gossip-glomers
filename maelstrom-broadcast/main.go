@@ -72,7 +72,6 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 	var body map[string]any
 	var store = s.store
 	n := s.node
-	retries := make(chan Retry, len(n.NodeIDs()))
 
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
@@ -95,6 +94,8 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 
 		return s.node.Reply(msg, body)
 	} else {
+		retries := make(chan Retry, len(n.NodeIDs()))
+
 		for _, dest := range n.NodeIDs() {
 			if dest != n.ID() {
 				wg.Add(1)
@@ -119,17 +120,18 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 		wg.Wait()
 
 		go func() {
-			r := <-retries
 			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Second))
 			defer cancel()
 
-			r.attempt--
-			_, err := r.exec(ctx, r.dest, r.body)
+			for r := range retries {
+				r.attempt--
+				_, err := r.exec(ctx, r.dest, r.body)
 
-			if err == nil || r.attempt <= 0 {
-				return
-			} else {
-				time.Sleep(500 * time.Millisecond)
+				if err == nil || r.attempt <= 0 {
+				} else {
+					time.Sleep(time.Millisecond)
+					retries <- r
+				}
 			}
 		}()
 
