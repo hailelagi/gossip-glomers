@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -93,39 +94,26 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 			if dest != n.ID() {
 				s.wg.Add(1)
 
-				d := time.Now().Add(2 * time.Second)
-				ctx, cancel := context.WithDeadline(context.Background(), d)
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
 				defer cancel()
 
 				go func(dest string) {
 					defer s.wg.Done()
+					_, err := n.SyncRPC(ctx, dest, body)
 
-					for i := 0; i < 5; i++ {
-						_, err := n.SyncRPC(ctx, dest, body)
-
-						if err == nil {
-							retry <- nil
-							return
-						}
-						retry <- err
+					if err == nil {
+						return
 					}
-				}(dest)
 
-				go func(dest string) {
-					for i := 0; i < 5; i++ {
-						err := <-retry
-						if err == nil {
-							return
-						}
-						n.Send(dest, body)
-						time.Sleep(time.Millisecond)
-					}
-				}(dest)
+					retry <- err
 
+				}(dest)
 			}
 		}
 
+		fmt.Fprintln(os.Stderr, <-retry)
 		s.wg.Wait()
+		fmt.Fprintln(os.Stderr, <-retry)
 
 		// ack
 		if body["msg_id"] == nil {
