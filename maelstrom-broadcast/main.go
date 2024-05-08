@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -38,6 +37,13 @@ type Session struct {
 	wg    sync.WaitGroup
 }
 
+type Retry struct {
+	dest    string
+	body    map[string]any
+	attempt int
+	exec    func(context.Context, string, any) (maelstrom.Message, error)
+}
+
 func (s *Session) topologyHandler(msg maelstrom.Message) error {
 	// TODO: diy yourself a topology of known 'logical' nodes that are discoverable
 	var body = make(map[string]any)
@@ -66,6 +72,7 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 	var body map[string]any
 	var store = s.store
 	n := s.node
+	retries := make(chan Retry, len(n.NodeIDs()))
 
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
@@ -88,13 +95,11 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 
 		return s.node.Reply(msg, body)
 	} else {
-		retry := make(chan error, 5)
-
 		for _, dest := range n.NodeIDs() {
 			if dest != n.ID() {
 				s.wg.Add(1)
 
-				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Second))
 				defer cancel()
 
 				go func(dest string) {
@@ -103,17 +108,30 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 
 					if err == nil {
 						return
+					} else {
+						retries <- Retry{body: body, dest: dest, attempt: 5, exec: n.SyncRPC}
 					}
-
-					retry <- err
 
 				}(dest)
 			}
 		}
 
-		fmt.Fprintln(os.Stderr, <-retry)
 		s.wg.Wait()
-		fmt.Fprintln(os.Stderr, <-retry)
+
+		go func() {
+			r := <-retries
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Second))
+			defer cancel()
+
+			r.attempt--
+			_, err := r.exec(ctx, r.dest, r.body)
+
+			if err == nil || r.attempt <= 0 {
+				return
+			} else {
+				time.Sleep(500 * time.Millisecond)
+			}
+		}()
 
 		// ack
 		if body["msg_id"] == nil {
