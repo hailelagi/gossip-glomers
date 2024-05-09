@@ -41,6 +41,7 @@ type Retry struct {
 	body    map[string]any
 	attempt int
 	exec    func(context.Context, string, any) (maelstrom.Message, error)
+	err     error
 }
 
 func (s *Session) topologyHandler(msg maelstrom.Message) error {
@@ -94,13 +95,13 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 
 		return s.node.Reply(msg, body)
 	} else {
-		retries := make(chan Retry, len(n.NodeIDs()))
+		retries := make(chan Retry, len(n.NodeIDs())-1)
 
 		for _, dest := range n.NodeIDs() {
 			if dest != n.ID() {
 				wg.Add(1)
 
-				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(500*time.Millisecond))
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
 				defer cancel()
 
 				go func(dest string) {
@@ -110,31 +111,33 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 					if err == nil {
 						return
 					} else {
-						retries <- Retry{body: body, dest: dest, attempt: 10, exec: n.SyncRPC}
+						retries <- Retry{body: body, dest: dest, attempt: 5, exec: n.SyncRPC, err: err}
 					}
 
 				}(dest)
 			}
 		}
-
 		wg.Wait()
 
+		// CONCURRENCY BUGS ABOUND SOMETHING HERE IS WEIRD.
 		go func() {
-			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(500*time.Millisecond))
-			defer cancel()
+			select {
+			case retry := <-retries:
+				if retry.attempt > 0 {
+					retry.attempt--
 
-			for range retries {
-				r := <-retries
-				go func() {
-					for i := r.attempt; i > 0; i-- {
-						_, err := r.exec(ctx, r.dest, r.body)
-						if err == nil {
-							return
-						} else {
-							time.Sleep(100 * time.Millisecond)
-						}
+					ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
+					defer cancel()
+
+					_, err := retry.exec(ctx, retry.dest, retry.body)
+					if err == nil {
+					} else {
+						time.Sleep(50 * time.Millisecond)
+						retries <- retry
 					}
-				}()
+				}
+			default:
+				// go to sleep
 			}
 		}()
 
