@@ -18,15 +18,16 @@ type Store struct {
 }
 
 type Session struct {
-	node  *maelstrom.Node
-	store *Store
+	node    *maelstrom.Node
+	store   *Store
+	retries chan Retry
 }
 
 type Retry struct {
 	dest    string
 	body    map[string]any
 	attempt int
-	exec    func(context.Context, string, any) (maelstrom.Message, error)
+	exec    func(string, any) error
 	err     error
 }
 
@@ -65,6 +66,7 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 	}
 
 	key := body["message"].(float64)
+	resp := map[string]any{"type": "broadcast_ok", "msg_id": body["msg_id"]}
 
 	store.Lock()
 	_, exists := store.index[key]
@@ -76,78 +78,68 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 	store.Unlock()
 
 	if exists {
-		body["type"] = "broadcast_ok"
-		delete(body, "message")
+		return s.node.Reply(msg, resp)
+	}
 
-		return s.node.Reply(msg, body)
-	} else {
-		retries := make(chan Retry, len(n.NodeIDs())-1)
+	for _, dest := range n.NodeIDs() {
+		wg.Add(1)
 
-		for _, dest := range n.NodeIDs() {
-			if dest != n.ID() {
-				wg.Add(1)
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
+		defer cancel()
 
-				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
-				defer cancel()
+		go func(dest string) {
+			defer wg.Done()
+			_, err := n.SyncRPC(ctx, dest, body)
 
-				go func(dest string) {
-					defer wg.Done()
-					_, err := n.SyncRPC(ctx, dest, body)
-
-					if err == nil {
-						return
-					} else {
-						retries <- Retry{body: body, dest: dest, attempt: 10, exec: n.SyncRPC, err: err}
-					}
-
-				}(dest)
+			if err == nil {
+				return
+			} else {
+				s.retries <- Retry{body: body, dest: dest, attempt: 15, exec: n.Send, err: err}
 			}
-		}
+		}(dest)
 
-		wg.Wait()
+	}
 
-		go func() {
-			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
+	wg.Wait()
+
+	return s.node.Reply(msg, resp)
+}
+
+func failureDetector(n *maelstrom.Node, retries chan Retry) {
+	for retry := range retries {
+		go func(retry Retry) {
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(600*time.Millisecond))
 			defer cancel()
 
-			for retry := range retries {
-				if retry.attempt > 0 {
-					retry.attempt--
-					_, err := retry.exec(ctx, retry.dest, retry.body)
+			retry.attempt--
 
-					if err == nil {
-					} else {
-						retries <- retry
-						time.Sleep(10 * time.Millisecond)
-					}
-				} else {
-					continue
+			if retry.attempt >= 0 {
+				_, err := n.SyncRPC(ctx, retry.dest, retry.body)
+
+				if err != nil {
+					time.Sleep(time.Second)
+					retries <- retry
 				}
+			} else {
+				log.Fatalf("silent message loss from queue %v", retry)
 			}
-		}()
-
-		// ack
-		if body["msg_id"] == nil {
-			return nil
-		} else {
-			body["type"] = "broadcast_ok"
-			delete(body, "message")
-			return s.node.Reply(msg, body)
-		}
-
+		}(retry)
 	}
 }
 
 func main() {
 	n := maelstrom.NewNode()
-	s := &Session{node: n, store: &Store{index: map[float64]bool{}, log: []float64{}}}
+	// number of nodes/req * num messages rate
+	retries := make(chan Retry, 50)
+
+	s := &Session{node: n, store: &Store{index: map[float64]bool{}, log: []float64{}}, retries: retries}
 
 	n.Handle("topology", s.topologyHandler)
 	n.Handle("read", s.readHandler)
 	n.Handle("broadcast", s.broadcastHandler)
-	n.Handle("broadcast_ok", func(msg maelstrom.Message) error {
-		return nil
-	})
+
+	// background failure detection
+	go failureDetector(n, retries)
 
 	// Execute the node's message loop. This will run until STDIN is closed.
 	if err := n.Run(); err != nil {
