@@ -11,21 +11,7 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-/*
-theory/explaination overall concept family "Broadcast alogrithms", distributed algorithm: "gossip protocol":
-- https://www.cl.cam.ac.uk/teaching/2122/ConcDisSys/dist-sys-notes.pdf
-- https://www.youtube.com/watch?v=77qpCahU3fo
-
-read more:
-van Steen & Tanenbaum: https://www.distributed-systems.net/index.php/books/ds4/
-
-DDIA:
-Cassandra and Riak take a different approach: they use a gossip protocol among the nodes to disseminate any changes
-in cluster state. Requests can be sent to any node, and that node forwards them to the appropriate node for the requested partition
-*/
-
 type Store struct {
-	// The value is always an integer and it is unique for each message from maelstrom
 	index map[float64]bool
 	log   []float64
 	sync.RWMutex
@@ -111,33 +97,32 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 					if err == nil {
 						return
 					} else {
-						retries <- Retry{body: body, dest: dest, attempt: 5, exec: n.SyncRPC, err: err}
+						retries <- Retry{body: body, dest: dest, attempt: 10, exec: n.SyncRPC, err: err}
 					}
 
 				}(dest)
 			}
 		}
+
 		wg.Wait()
 
-		// CONCURRENCY BUGS ABOUND SOMETHING HERE IS WEIRD.
 		go func() {
-			select {
-			case retry := <-retries:
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
+			defer cancel()
+
+			for retry := range retries {
 				if retry.attempt > 0 {
 					retry.attempt--
-
-					ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
-					defer cancel()
-
 					_, err := retry.exec(ctx, retry.dest, retry.body)
+
 					if err == nil {
 					} else {
-						time.Sleep(50 * time.Millisecond)
 						retries <- retry
+						time.Sleep(10 * time.Millisecond)
 					}
+				} else {
+					continue
 				}
-			default:
-				// go to sleep
 			}
 		}()
 
