@@ -68,15 +68,7 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 
 	key := body["message"].(float64)
 	resp := map[string]any{"type": "broadcast_ok", "msg_id": body["msg_id"]}
-
-	store.Lock()
-	_, exists := store.index[key]
-
-	if !exists {
-		store.index[key] = true
-		store.log = append(store.log, key)
-	}
-	store.Unlock()
+	exists := store.findOrInsert(key)
 
 	if exists {
 		return s.node.Reply(msg, resp)
@@ -95,7 +87,7 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 			if err == nil {
 				return
 			} else {
-				s.retries <- Retry{body: body, dest: dest, attempt: 15, exec: n.Send, err: err}
+				s.retries <- Retry{body: body, dest: dest, attempt: 20, exec: n.Send, err: err}
 			}
 		}(dest)
 	}
@@ -127,6 +119,20 @@ func failureDetector(n *maelstrom.Node, retries chan Retry) {
 			}
 		}(retry)
 	}
+}
+
+func (s *Store) findOrInsert(key float64) bool {
+	s.Lock()
+	defer s.Unlock()
+
+	_, exists := s.index[key]
+
+	if !exists {
+		s.index[key] = true
+		s.log = append(s.log, key)
+	}
+
+	return exists
 }
 
 func main() {
