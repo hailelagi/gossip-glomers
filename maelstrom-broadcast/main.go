@@ -95,10 +95,9 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 			if err == nil {
 				return
 			} else {
-				s.retries <- Retry{body: body, dest: dest, attempt: 40, exec: n.Send, err: err}
+				s.retries <- Retry{body: body, dest: dest, attempt: 15, exec: n.Send, err: err}
 			}
 		}(dest)
-
 	}
 
 	wg.Wait()
@@ -118,12 +117,13 @@ func failureDetector(n *maelstrom.Node, retries chan Retry) {
 				_, err := n.SyncRPC(ctx, retry.dest, retry.body)
 
 				if err != nil {
-					jitter := time.Duration(rand.Intn(500) + 100)
+					jitter := time.Duration(rand.Intn(100) + 100)
 					time.Sleep(jitter * time.Millisecond)
 					retries <- retry
 				}
 			} else {
-				log.Fatalf("silent message loss from queue %v", retry)
+				log.SetOutput(os.Stderr)
+				log.Printf("message slip loss beyond tolerance from queue %v", retry)
 			}
 		}(retry)
 	}
@@ -131,9 +131,8 @@ func failureDetector(n *maelstrom.Node, retries chan Retry) {
 
 func main() {
 	n := maelstrom.NewNode()
-	// number of nodes/req * num messages rate
+	// number of nodes/req * attempts
 	retries := make(chan Retry, 250)
-
 	s := &Session{node: n, store: &Store{index: map[float64]bool{}, log: []float64{}}, retries: retries}
 
 	n.Handle("topology", s.topologyHandler)
