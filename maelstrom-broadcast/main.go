@@ -94,7 +94,7 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 			if err == nil {
 				return
 			} else {
-				s.retries <- Retry{body: body, dest: dest, attempt: 15, exec: n.Send, err: err}
+				s.retries <- Retry{body: body, dest: dest, attempt: 40, exec: n.Send, err: err}
 			}
 		}(dest)
 
@@ -108,7 +108,7 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 func failureDetector(n *maelstrom.Node, retries chan Retry) {
 	for retry := range retries {
 		go func(retry Retry) {
-			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(600*time.Millisecond))
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
 			defer cancel()
 
 			retry.attempt--
@@ -130,7 +130,7 @@ func failureDetector(n *maelstrom.Node, retries chan Retry) {
 func main() {
 	n := maelstrom.NewNode()
 	// number of nodes/req * num messages rate
-	retries := make(chan Retry, 50)
+	retries := make(chan Retry, 250)
 
 	s := &Session{node: n, store: &Store{index: map[float64]bool{}, log: []float64{}}, retries: retries}
 
