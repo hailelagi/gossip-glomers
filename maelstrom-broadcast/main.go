@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"math/rand"
 	"os"
 	"sync"
 	"time"
@@ -117,7 +118,8 @@ func failureDetector(n *maelstrom.Node, retries chan Retry) {
 				_, err := n.SyncRPC(ctx, retry.dest, retry.body)
 
 				if err != nil {
-					time.Sleep(time.Second)
+					jitter := time.Duration(rand.Intn(500) + 100)
+					time.Sleep(jitter * time.Millisecond)
 					retries <- retry
 				}
 			} else {
