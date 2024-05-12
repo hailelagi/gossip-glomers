@@ -28,7 +28,6 @@ type Retry struct {
 	dest    string
 	body    map[string]any
 	attempt int
-	exec    func(string, any) error
 	err     error
 }
 
@@ -87,7 +86,7 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 			if err == nil {
 				return
 			} else {
-				s.retries <- Retry{body: body, dest: dest, attempt: 20, exec: n.Send, err: err}
+				s.retries <- Retry{body: body, dest: dest, attempt: 20, err: err}
 			}
 		}(dest)
 	}
@@ -137,8 +136,7 @@ func (s *Store) findOrInsert(key float64) bool {
 
 func main() {
 	n := maelstrom.NewNode()
-	// number of nodes/req * attempts
-	retries := make(chan Retry, 250)
+	retries := make(chan Retry)
 	s := &Session{node: n, store: &Store{index: map[float64]bool{}, log: []float64{}}, retries: retries}
 
 	n.Handle("topology", s.topologyHandler)
