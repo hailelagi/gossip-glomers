@@ -136,7 +136,8 @@ func (s *Store) findOrInsert(key float64) bool {
 
 func main() {
 	n := maelstrom.NewNode()
-	retries := make(chan Retry)
+	// TODO(fix-flaky): retry worker pool queue size
+	retries := make(chan Retry, 500)
 	s := &Session{node: n, store: &Store{index: map[float64]bool{}, log: []float64{}}, retries: retries}
 
 	n.Handle("topology", s.topologyHandler)
