@@ -31,6 +31,12 @@ type Retry struct {
 	err     error
 }
 
+/*
+todo: use little's law: L = rate * wait time
+and somewhat estimate a 'reasonable' queue size
+*/
+var retries = make(chan Retry, 500)
+
 func (s *Session) topologyHandler(msg maelstrom.Message) error {
 	// TODO: diy yourself a topology of known 'logical' nodes that are discoverable
 	var body = make(map[string]any)
@@ -70,7 +76,7 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 	exists := store.findOrInsert(key)
 
 	if exists {
-		return s.node.Reply(msg, resp)
+		return nil
 	}
 
 	for _, dest := range n.NodeIDs() {
@@ -108,8 +114,11 @@ func failureDetector(n *maelstrom.Node, retries chan Retry) {
 				_, err := n.SyncRPC(ctx, retry.dest, retry.body)
 
 				if err != nil {
-					jitter := time.Duration(rand.Intn(100) + 100)
+					// this seems to be fake panacea for a race condition somewhere
+					// in the way this queue is designed.
+					jitter := time.Duration(rand.Intn(100) + 1)
 					time.Sleep(jitter * time.Millisecond)
+
 					retries <- retry
 				}
 			} else {
@@ -136,8 +145,8 @@ func (s *Store) findOrInsert(key float64) bool {
 
 func main() {
 	n := maelstrom.NewNode()
-	// TODO(fix-flaky): retry worker pool queue size
-	retries := make(chan Retry, 500)
+	defer close(retries)
+
 	s := &Session{node: n, store: &Store{index: map[float64]bool{}, log: []float64{}}, retries: retries}
 
 	n.Handle("topology", s.topologyHandler)
@@ -152,4 +161,5 @@ func main() {
 		log.Printf("ERROR: %s", err)
 		os.Exit(1)
 	}
+
 }
