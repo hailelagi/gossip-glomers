@@ -6,4 +6,5 @@ use (
 	./maelstrom-unique-ids
 	./maelstrom-g-counter
 	./maelstrom-kafka
+	./maelstrom-txn
 )
