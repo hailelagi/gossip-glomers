@@ -19,9 +19,8 @@ type Store struct {
 }
 
 type Session struct {
-	node    *maelstrom.Node
-	store   *Store
-	retries chan Retry
+	node  *maelstrom.Node
+	store *Store
 }
 
 type Retry struct {
@@ -82,7 +81,8 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 	for _, dest := range n.NodeIDs() {
 		wg.Add(1)
 
-		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
+		deadline := time.Now().Add(400 * time.Millisecond)
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
 
 		go func(dest string) {
@@ -92,7 +92,7 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 			if err == nil {
 				return
 			} else {
-				s.retries <- Retry{body: body, dest: dest, attempt: 20, err: err}
+				retries <- Retry{body: body, dest: dest, attempt: 20, err: err}
 			}
 		}(dest)
 	}
@@ -105,7 +105,8 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 func failureDetector(n *maelstrom.Node, retries chan Retry) {
 	for retry := range retries {
 		go func(retry Retry) {
-			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
+			deadline := time.Now().Add(400 * time.Millisecond)
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
 
 			retry.attempt--
@@ -114,7 +115,7 @@ func failureDetector(n *maelstrom.Node, retries chan Retry) {
 				_, err := n.SyncRPC(ctx, retry.dest, retry.body)
 
 				if err != nil {
-					// this seems to be fake panacea for a race condition somewhere
+					// this seems to be a fake panacea for a race condition somewhere
 					// in the way this queue is designed.
 					jitter := time.Duration(rand.Intn(100) + 1)
 					time.Sleep(jitter * time.Millisecond)
@@ -147,7 +148,7 @@ func main() {
 	n := maelstrom.NewNode()
 	defer close(retries)
 
-	s := &Session{node: n, store: &Store{index: map[float64]bool{}, log: []float64{}}, retries: retries}
+	s := &Session{node: n, store: &Store{index: map[float64]bool{}, log: []float64{}}}
 
 	n.Handle("topology", s.topologyHandler)
 	n.Handle("read", s.readHandler)
