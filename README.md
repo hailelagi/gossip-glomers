@@ -1,6 +1,8 @@
 # gossip-glomers
 
 <https://fly.io/dist-sys/>
+## status
+still working through 'em! somewhere in between a descent broadcast algorithm and CRDTs
 
 ## Installation
 
