@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"math/rand"
 	"os"
 	"sync"
 	"time"
@@ -12,18 +11,18 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-type Store struct {
+type store struct {
 	index map[float64]bool
 	log   []float64
 	sync.RWMutex
 }
 
-type Session struct {
+type session struct {
 	node  *maelstrom.Node
-	store *Store
+	store *store
 }
 
-type Retry struct {
+type retry struct {
 	dest    string
 	body    map[string]any
 	attempt int
@@ -34,9 +33,9 @@ type Retry struct {
 todo: use little's law: L = rate * wait time
 and somewhat estimate a 'reasonable' queue size
 */
-var retries = make(chan Retry, 500)
+var retries = make(chan retry, 500)
 
-func (s *Session) topologyHandler(msg maelstrom.Message) error {
+func (s *session) topologyHandler(msg maelstrom.Message) error {
 	// TODO: diy yourself a topology of known 'logical' nodes that are discoverable
 	var body = make(map[string]any)
 	body["type"] = "topology_ok"
@@ -45,7 +44,7 @@ func (s *Session) topologyHandler(msg maelstrom.Message) error {
 
 }
 
-func (s *Session) readHandler(msg maelstrom.Message) error {
+func (s *session) readHandler(msg maelstrom.Message) error {
 	var body map[string]any
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
@@ -60,7 +59,7 @@ func (s *Session) readHandler(msg maelstrom.Message) error {
 	return s.node.Reply(msg, body)
 }
 
-func (s *Session) broadcastHandler(msg maelstrom.Message) error {
+func (s *session) broadcastHandler(msg maelstrom.Message) error {
 	var wg sync.WaitGroup
 	var body map[string]any
 	var store = s.store
@@ -92,7 +91,7 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 			if err == nil {
 				return
 			} else {
-				retries <- Retry{body: body, dest: dest, attempt: 20, err: err}
+				retries <- retry{body: body, dest: dest, attempt: 20, err: err}
 			}
 		}(dest)
 	}
@@ -102,9 +101,13 @@ func (s *Session) broadcastHandler(msg maelstrom.Message) error {
 	return s.node.Reply(msg, resp)
 }
 
-func failureDetector(n *maelstrom.Node, retries chan Retry) {
-	for retry := range retries {
-		go func(retry Retry) {
+func failureDetector(n *maelstrom.Node, c *sync.Cond, retries chan retry) {
+	c.L.Lock()
+
+	for r := range retries {
+		c.Wait()
+
+		go func(retry retry) {
 			deadline := time.Now().Add(400 * time.Millisecond)
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
@@ -115,22 +118,19 @@ func failureDetector(n *maelstrom.Node, retries chan Retry) {
 				_, err := n.SyncRPC(ctx, retry.dest, retry.body)
 
 				if err != nil {
-					// this seems to be a fake panacea for a race condition somewhere
-					// in the way this queue is designed.
-					jitter := time.Duration(rand.Intn(100) + 1)
-					time.Sleep(jitter * time.Millisecond)
-
 					retries <- retry
 				}
 			} else {
 				log.SetOutput(os.Stderr)
 				log.Printf("message slip loss beyond tolerance from queue %v", retry)
 			}
-		}(retry)
+		}(r)
 	}
+
+	c.L.Unlock()
 }
 
-func (s *Store) findOrInsert(key float64) bool {
+func (s *store) findOrInsert(key float64) bool {
 	s.Lock()
 	defer s.Unlock()
 
@@ -148,14 +148,15 @@ func main() {
 	n := maelstrom.NewNode()
 	defer close(retries)
 
-	s := &Session{node: n, store: &Store{index: map[float64]bool{}, log: []float64{}}}
+	s := &session{node: n, store: &store{index: map[float64]bool{}, log: []float64{}}}
 
 	n.Handle("topology", s.topologyHandler)
 	n.Handle("read", s.readHandler)
 	n.Handle("broadcast", s.broadcastHandler)
 
+	c := sync.NewCond(&sync.Mutex{})
 	// background failure detection
-	go failureDetector(n, retries)
+	go failureDetector(n, c, retries)
 
 	// Execute the node's message loop. This will run until STDIN is closed.
 	if err := n.Run(); err != nil {
