@@ -22,7 +22,6 @@ type session struct {
 	node    *maelstrom.Node
 	store   *store
 	retries chan retry
-	mu      sync.Mutex
 }
 
 type retry struct {
@@ -32,8 +31,12 @@ type retry struct {
 	err     error
 }
 
+/*
+The neighbors Maelstrom suggests are, by default, arranged in a two-dimensional grid.
+This means that messages are often duplicated en route to other nodes, and latencies
+are on the order of 2 * sqrt(n) network delays.
+*/
 func (s *session) topologyHandler(msg maelstrom.Message) error {
-	// TODO: diy yourself a topology of known 'logical' nodes that are discoverable
 	var body = make(map[string]any)
 	body["type"] = "topology_ok"
 
@@ -85,10 +88,7 @@ func (s *session) broadcastHandler(msg maelstrom.Message) error {
 			if err == nil {
 				return
 			} else {
-				s.mu.Lock()
-				defer s.mu.Unlock()
-
-				s.retries <- retry{body: body, dest: dest, attempt: 20, err: err}
+				s.retries <- retry{body: body, dest: dest, attempt: 10, err: err}
 			}
 		}(ctx, s, dest, body, &wg)
 	}
@@ -99,38 +99,27 @@ func (s *session) broadcastHandler(msg maelstrom.Message) error {
 	return s.node.Reply(msg, response)
 }
 
-func failureDetector(s *session) {
-	var attempts sync.WaitGroup
-
+func failureDetector(s *session, retries chan retry) {
 	for r := range s.retries {
 		r := r
-		attempts.Add(1)
 
-		go func(retry retry, attempts *sync.WaitGroup) {
-			deadline := time.Now().Add(200 * time.Millisecond)
+		go func(retry retry) {
+			deadline := time.Now().Add(300 * time.Millisecond)
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
-			defer attempts.Done()
-
 			retry.attempt--
 
 			if retry.attempt >= 0 {
 				_, err := s.node.SyncRPC(ctx, retry.dest, retry.body)
-
 				if err != nil {
-					s.mu.Lock()
-					defer s.mu.Unlock()
-
-					s.retries <- retry
+					retries <- retry
 				}
 			} else {
 				log.SetOutput(os.Stderr)
 				log.Printf("message slip loss beyond tolerance from queue %v", retry)
 			}
-		}(r, &attempts)
+		}(r)
 	}
-
-	attempts.Wait()
 }
 
 func (s *store) findOrInsert(key float64) bool {
@@ -154,7 +143,7 @@ func main() {
 	  rate == 100 msgs/sec assuming efficient workload, latency/wait mininum = 100ms, 400ms average
 	  100 * 0.1 = 10 msgs per request * 25 - 1(self) nodes = 240 queue size
 	*/
-	var retries = make(chan retry, 240)
+	var retries = make(chan retry, 2400)
 
 	s := &session{
 		node: n, retries: retries,
@@ -167,7 +156,7 @@ func main() {
 
 	// background failure detectors
 	for i := 0; i < runtime.NumCPU(); i++ {
-		go failureDetector(s)
+		go failureDetector(s, retries)
 	}
 
 	// Execute the node's message loop. This will run until STDIN is closed.
