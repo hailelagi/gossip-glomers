@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"math/rand"
 	"os"
-	"runtime"
 	"sync"
 	"time"
 
@@ -21,7 +21,7 @@ type store struct {
 type session struct {
 	node    *maelstrom.Node
 	store   *store
-	retries chan retry
+	retries chan<- retry
 }
 
 type retry struct {
@@ -36,11 +36,24 @@ The neighbors Maelstrom suggests are, by default, arranged in a two-dimensional 
 This means that messages are often duplicated en route to other nodes, and latencies
 are on the order of 2 * sqrt(n) network delays.
 */
+var neighbors []any
+
 func (s *session) topologyHandler(msg maelstrom.Message) error {
 	var body = make(map[string]any)
-	body["type"] = "topology_ok"
 
-	return s.node.Reply(msg, body)
+	if err := json.Unmarshal(msg.Body, &body); err != nil {
+		return err
+	}
+
+	self := s.node.ID()
+	topology := body["topology"].(map[string]any)
+	// neighbors = topology[self].([]string)
+	neighbors = topology[self].([]any)
+
+	log.SetOutput(os.Stderr)
+	log.Printf("bb %v", neighbors)
+
+	return s.node.Reply(msg, map[string]any{"type": "topology_ok"})
 
 }
 
@@ -62,56 +75,63 @@ func (s *session) readHandler(msg maelstrom.Message) error {
 func (s *session) broadcastHandler(msg maelstrom.Message) error {
 	var wg sync.WaitGroup
 	var body map[string]any
+	var store = s.store
+	n := s.node
 
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
 
 	key := body["message"].(float64)
-	exists := s.store.findOrInsert(key)
+	exists := store.findOrInsert(key)
 
 	if exists {
 		return nil
 	}
 
-	for _, dest := range s.node.NodeIDs() {
+	for _, dest := range neighbors {
 		wg.Add(1)
 
-		deadline := time.Now().Add(200 * time.Millisecond)
+		deadline := time.Now().Add(400 * time.Millisecond)
 		ctx, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
 
-		go func(ctx context.Context, s *session, dest string, body map[string]any, wg *sync.WaitGroup) {
+		go func(dest string) {
 			defer wg.Done()
-			_, err := s.node.SyncRPC(ctx, dest, body)
+			_, err := n.SyncRPC(ctx, dest, body)
 
 			if err == nil {
 				return
 			} else {
-				s.retries <- retry{body: body, dest: dest, attempt: 10, err: err}
+				s.retries <- retry{body: body, dest: dest, attempt: 15, err: err}
 			}
-		}(ctx, s, dest, body, &wg)
+		}(dest.(string))
 	}
 
 	wg.Wait()
 
-	response := map[string]any{"type": "broadcast_ok", "msg_id": body["msg_id"]}
-	return s.node.Reply(msg, response)
+	return s.node.Reply(msg, map[string]any{"type": "broadcast_ok", "msg_id": body["msg_id"]})
 }
 
 func failureDetector(s *session, retries chan retry) {
-	for r := range s.retries {
+	for r := range retries {
 		r := r
-
 		go func(retry retry) {
-			deadline := time.Now().Add(300 * time.Millisecond)
+			deadline := time.Now().Add(400 * time.Millisecond)
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
+
 			retry.attempt--
 
 			if retry.attempt >= 0 {
 				_, err := s.node.SyncRPC(ctx, retry.dest, retry.body)
+
 				if err != nil {
+					// this seems to be a fake panacea for a race condition somewhere
+					// in the way this queue is designed.
+					jitter := time.Duration(rand.Intn(100) + 1)
+					time.Sleep(jitter * time.Millisecond)
+
 					retries <- retry
 				}
 			} else {
@@ -143,7 +163,7 @@ func main() {
 	  rate == 100 msgs/sec assuming efficient workload, latency/wait mininum = 100ms, 400ms average
 	  100 * 0.1 = 10 msgs per request * 25 - 1(self) nodes = 240 queue size
 	*/
-	var retries = make(chan retry, 2400)
+	var retries = make(chan retry, 240)
 
 	s := &session{
 		node: n, retries: retries,
@@ -154,10 +174,7 @@ func main() {
 	n.Handle("read", s.readHandler)
 	n.Handle("broadcast", s.broadcastHandler)
 
-	// background failure detectors
-	for i := 0; i < runtime.NumCPU(); i++ {
-		go failureDetector(s, retries)
-	}
+	go failureDetector(s, retries)
 
 	// Execute the node's message loop. This will run until STDIN is closed.
 	if err := n.Run(); err != nil {
