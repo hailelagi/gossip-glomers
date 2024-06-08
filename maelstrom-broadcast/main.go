@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -18,8 +19,10 @@ type store struct {
 }
 
 type session struct {
-	node  *maelstrom.Node
-	store *store
+	node    *maelstrom.Node
+	store   *store
+	retries chan retry
+	mu      sync.Mutex
 }
 
 type retry struct {
@@ -28,12 +31,6 @@ type retry struct {
 	attempt int
 	err     error
 }
-
-/*
-todo: use little's law: L = rate * wait time
-and somewhat estimate a 'reasonable' queue size
-*/
-var retries = make(chan retry, 500)
 
 func (s *session) topologyHandler(msg maelstrom.Message) error {
 	// TODO: diy yourself a topology of known 'logical' nodes that are discoverable
@@ -62,72 +59,78 @@ func (s *session) readHandler(msg maelstrom.Message) error {
 func (s *session) broadcastHandler(msg maelstrom.Message) error {
 	var wg sync.WaitGroup
 	var body map[string]any
-	var store = s.store
-	n := s.node
 
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
 
 	key := body["message"].(float64)
-	resp := map[string]any{"type": "broadcast_ok", "msg_id": body["msg_id"]}
-	exists := store.findOrInsert(key)
+	exists := s.store.findOrInsert(key)
 
 	if exists {
 		return nil
 	}
 
-	for _, dest := range n.NodeIDs() {
+	for _, dest := range s.node.NodeIDs() {
 		wg.Add(1)
 
-		deadline := time.Now().Add(400 * time.Millisecond)
+		deadline := time.Now().Add(200 * time.Millisecond)
 		ctx, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
 
-		go func(dest string) {
+		go func(ctx context.Context, s *session, dest string, body map[string]any, wg *sync.WaitGroup) {
 			defer wg.Done()
-			_, err := n.SyncRPC(ctx, dest, body)
+			_, err := s.node.SyncRPC(ctx, dest, body)
 
 			if err == nil {
 				return
 			} else {
-				retries <- retry{body: body, dest: dest, attempt: 20, err: err}
+				s.mu.Lock()
+				defer s.mu.Unlock()
+
+				s.retries <- retry{body: body, dest: dest, attempt: 20, err: err}
 			}
-		}(dest)
+		}(ctx, s, dest, body, &wg)
 	}
 
 	wg.Wait()
 
-	return s.node.Reply(msg, resp)
+	response := map[string]any{"type": "broadcast_ok", "msg_id": body["msg_id"]}
+	return s.node.Reply(msg, response)
 }
 
-func failureDetector(n *maelstrom.Node, c *sync.Cond, retries chan retry) {
-	c.L.Lock()
+func failureDetector(s *session) {
+	var attempts sync.WaitGroup
 
-	for r := range retries {
-		c.Wait()
+	for r := range s.retries {
+		r := r
+		attempts.Add(1)
 
-		go func(retry retry) {
-			deadline := time.Now().Add(400 * time.Millisecond)
+		go func(retry retry, attempts *sync.WaitGroup) {
+			deadline := time.Now().Add(200 * time.Millisecond)
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
+			defer attempts.Done()
 
 			retry.attempt--
 
 			if retry.attempt >= 0 {
-				_, err := n.SyncRPC(ctx, retry.dest, retry.body)
+				_, err := s.node.SyncRPC(ctx, retry.dest, retry.body)
 
 				if err != nil {
-					retries <- retry
+					s.mu.Lock()
+					defer s.mu.Unlock()
+
+					s.retries <- retry
 				}
 			} else {
 				log.SetOutput(os.Stderr)
 				log.Printf("message slip loss beyond tolerance from queue %v", retry)
 			}
-		}(r)
+		}(r, &attempts)
 	}
 
-	c.L.Unlock()
+	attempts.Wait()
 }
 
 func (s *store) findOrInsert(key float64) bool {
@@ -146,22 +149,30 @@ func (s *store) findOrInsert(key float64) bool {
 
 func main() {
 	n := maelstrom.NewNode()
-	defer close(retries)
+	/*
+	  little's law: L (num units) = arrival rate * wait time (guesstimate)
+	  rate == 100 msgs/sec assuming efficient workload, latency/wait mininum = 100ms, 400ms average
+	  100 * 0.1 = 10 msgs per request * 25 - 1(self) nodes = 240 queue size
+	*/
+	var retries = make(chan retry, 240)
 
-	s := &session{node: n, store: &store{index: map[float64]bool{}, log: []float64{}}}
+	s := &session{
+		node: n, retries: retries,
+		store: &store{index: map[float64]bool{}, log: []float64{}},
+	}
 
 	n.Handle("topology", s.topologyHandler)
 	n.Handle("read", s.readHandler)
 	n.Handle("broadcast", s.broadcastHandler)
 
-	c := sync.NewCond(&sync.Mutex{})
-	// background failure detection
-	go failureDetector(n, c, retries)
+	// background failure detectors
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go failureDetector(s)
+	}
 
 	// Execute the node's message loop. This will run until STDIN is closed.
 	if err := n.Run(); err != nil {
 		log.Printf("ERROR: %s", err)
 		os.Exit(1)
 	}
-
 }
