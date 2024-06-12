@@ -111,13 +111,17 @@ func (s *session) broadcastHandler(msg maelstrom.Message) error {
 }
 
 func failureDetector(s *session) {
+	var atttempts sync.WaitGroup
+
 	for r := range s.retries {
 		r := r
+		atttempts.Add(1)
 
-		go func(retry retry) {
-			deadline := time.Now().Add(300 * time.Millisecond)
+		go func(retry retry, attempts *sync.WaitGroup) {
+			deadline := time.Now().Add(800 * time.Millisecond)
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
+			defer attempts.Done()
 
 			retry.attempt--
 
@@ -133,8 +137,10 @@ func failureDetector(s *session) {
 				log.SetOutput(os.Stderr)
 				log.Printf("dead letter message slip loss beyond tolerance %v", retry)
 			}
-		}(r)
+		}(r, &atttempts)
 	}
+
+	atttempts.Wait()
 }
 
 func (s *store) findOrInsert(key float64) bool {
