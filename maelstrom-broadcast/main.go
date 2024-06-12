@@ -90,7 +90,7 @@ func (s *session) broadcastHandler(msg maelstrom.Message) error {
 		wg.Add(1)
 
 		go func(dest string) {
-			deadline := time.Now().Add(200 * time.Millisecond)
+			deadline := time.Now().Add(400 * time.Millisecond)
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
 			defer wg.Done()
@@ -100,7 +100,7 @@ func (s *session) broadcastHandler(msg maelstrom.Message) error {
 			if err == nil {
 				return
 			} else {
-				s.retries <- retry{body: body, dest: dest, attempt: 25, err: err}
+				s.retries <- retry{body: body, dest: dest, attempt: 20, err: err}
 			}
 		}(dest.(string))
 	}
@@ -127,8 +127,6 @@ func failureDetector(s *session) {
 				if err == nil {
 					return
 				}
-
-				time.Sleep(time.Duration(retry.attempt) * time.Millisecond)
 				s.retries <- retry
 
 			} else {
