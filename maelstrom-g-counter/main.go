@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
@@ -25,6 +26,8 @@ type retry struct {
 	err     error
 }
 
+var gCounter int64
+
 func (s *session) addHandler(msg maelstrom.Message) error {
 	var wg sync.WaitGroup
 	var body map[string]any
@@ -33,20 +36,21 @@ func (s *session) addHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	ctx := context.Background()
+	// ctx := context.Background()
 	delta := int64(body["delta"].(float64))
+	atomic.AddInt64(&gCounter, delta)
 
 	// the operation is addition and is commutative
 	// as it is a counter that only ever grows
-	prev, e := s.kv.ReadInt(ctx, "counter")
+	// prev, e := s.kv.ReadInt(ctx, "counter")
+	/*
+		if e != nil {
+			prev = 0
+		}
 
-	if e != nil {
-		prev = 0
-	}
-
-	result := int64(prev) + delta
-	err := s.kv.CompareAndSwap(ctx, "counter", delta, result, true)
-
+		result := int64(prev) + delta
+		err := s.kv.CompareAndSwap(ctx, "counter", delta, result, true)
+	*/
 	for _, dest := range s.node.NodeIDs() {
 		wg.Add(1)
 
@@ -68,9 +72,11 @@ func (s *session) addHandler(msg maelstrom.Message) error {
 
 	wg.Wait()
 
-	if err == nil {
-		log.Fatalf("could not update increment only counter")
-	}
+	/*
+		if err == nil {
+			log.Fatalf("could not update increment only counter")
+		}
+	*/
 
 	return s.node.Reply(msg, map[string]any{"type": "add_ok"})
 }
@@ -78,14 +84,20 @@ func (s *session) addHandler(msg maelstrom.Message) error {
 func (s *session) readHandler(msg maelstrom.Message) error {
 	var body = map[string]any{"type": "read_ok"}
 
-	ctx := context.Background()
-	delta, err := s.kv.Read(ctx, "counter")
+	/*
+		ctx := context.Background()
+		delta, err := s.kv.Read(ctx, "counter")
 
-	if err == nil {
-		log.Fatalf("could not read counter")
-	}
+		if err == nil {
+			log.Fatalf("could not read counter")
+		}
 
-	body["value"] = delta.(float64)
+		body["value"] = delta.(float64)
+	*/
+
+	delta := atomic.LoadInt64(&gCounter)
+	body["value"] = delta
+
 	return s.node.Reply(msg, body)
 }
 
