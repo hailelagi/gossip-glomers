@@ -28,6 +28,7 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 	delta := int64(body["delta"].(float64))
 	atomic.AddInt64(&gCounter, delta)
 
+	//replicate count... it is assumed each messsage is idempotent
 	for _, dest := range s.node.NodeIDs() {
 		wg.Add(1)
 
