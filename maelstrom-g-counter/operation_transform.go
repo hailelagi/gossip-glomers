@@ -64,13 +64,7 @@ func (s *session) readOperationHandler(msg maelstrom.Message) error {
 
 func run() {
 	n := maelstrom.NewNode()
-	kv := maelstrom.NewSeqKV(n)
-	var retries = make(chan retry, 100)
-
-	s := &session{
-		node: n, retries: retries,
-		kv: kv,
-	}
+	s := &session{node: n, retries: make(chan retry, 100)}
 
 	n.Handle("add", s.addOperationHandler)
 	n.Handle("read", s.readOperationHandler)
