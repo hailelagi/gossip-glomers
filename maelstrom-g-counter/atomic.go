@@ -13,7 +13,7 @@ import (
 	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
-)
+)0
 
 var gCounter int64
 
