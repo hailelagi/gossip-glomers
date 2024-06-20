@@ -1,5 +1,7 @@
 package main
 
+/*
+
 import (
 	"context"
 	"encoding/json"
@@ -79,3 +81,4 @@ func run() {
 		os.Exit(1)
 	}
 }
+*/

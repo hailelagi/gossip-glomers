@@ -25,28 +25,30 @@ type retry struct {
 	err     error
 }
 
-var vector map[string]int
-
-func (s *session) addHandler(msg maelstrom.Message) error {
+// the operation is addition and is commutative
+// as it is a counter that only ever grows
+func (s *session) addOperationHandler(msg maelstrom.Message) error {
 	var wg sync.WaitGroup
+	var result int
 	var body map[string]any
 
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
 
+	delta := int(body["delta"].(float64))
 	ctx := context.Background()
-	delta := int64(body["delta"].(float64))
+	previous, err := s.kv.Read(ctx, "counter")
 
-	prev, e := s.kv.ReadInt(ctx, "counter")
-
-	if e != nil {
-		prev = 0
+	if err != nil {
+		result = 0
+	} else {
+		result = previous.(int) + delta
 	}
 
-	result := int64(prev) + delta
-	err := s.kv.CompareAndSwap(ctx, "counter", delta, result, true)
+	s.kv.CompareAndSwap(ctx, "counter", previous, result, true)
 
+	//replicate count... it is assumed each messsage is idempotent
 	for _, dest := range s.node.NodeIDs() {
 		wg.Add(1)
 
@@ -68,27 +70,19 @@ func (s *session) addHandler(msg maelstrom.Message) error {
 
 	wg.Wait()
 
-	if err == nil {
-		log.Fatalf("could not update increment only counter")
-	}
-
 	return s.node.Reply(msg, map[string]any{"type": "add_ok"})
 }
 
-func (s *session) readHandler(msg maelstrom.Message) error {
+func (s *session) readOperationHandler(msg maelstrom.Message) error {
 	var body = map[string]any{"type": "read_ok"}
-
 	ctx := context.Background()
-	delta, err := s.kv.Read(ctx, "counter")
+	count, err := s.kv.ReadInt(ctx, "counter")
 
-	if err == nil {
-		log.Fatalf("could not read counter")
+	if err != nil {
+		count = 0
 	}
 
-	body["value"] = delta.(float64)
-
-	body["value"] = delta
-
+	body["value"] = count
 	return s.node.Reply(msg, body)
 }
 
@@ -135,8 +129,8 @@ func main() {
 		kv: kv,
 	}
 
-	n.Handle("add", s.addHandler)
-	n.Handle("read", s.readHandler)
+	n.Handle("add", s.addOperationHandler)
+	n.Handle("read", s.readOperationHandler)
 
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go failureDetector(s)
