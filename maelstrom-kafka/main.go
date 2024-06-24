@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"os"
 	"runtime"
 	"sync"
@@ -33,6 +32,11 @@ type retry struct {
 
 var neighbors []any
 
+// the replicated log
+// TODO: how to model offsets in the log?
+// can we just use slice indices?
+var log []map[string]int
+
 func (s *session) topologyHandler(msg maelstrom.Message) error {
 	var body = make(map[string]any)
 
@@ -53,6 +57,8 @@ func (s *session) sendHandler(msg maelstrom.Message) error {
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
+
+	//log = append(log, body["msg"])
 
 	return s.node.Reply(msg, map[string]any{"type": "send_ok", "msg_id": body["msg_id"]})
 }
