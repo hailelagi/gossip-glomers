@@ -85,7 +85,7 @@ func (s *session) broadcastHandler(msg maelstrom.Message) error {
 	for _, dest := range neighbors {
 		wg.Add(1)
 
-		if dest == body["src"] || dest == s.node.ID() {
+		if dest == msg.Src || dest == s.node.ID() {
 			continue
 		}
 
