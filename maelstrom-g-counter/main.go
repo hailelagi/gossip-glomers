@@ -44,7 +44,7 @@ func (s *session) topologyHandler(msg maelstrom.Message) error {
 
 // the operation is addition and is commutative
 // as it is a counter that only ever grows
-func (s *session) addOperationHandler(msg maelstrom.Message) error {
+func (s *session) addOp0erationHandler(msg maelstrom.Message) error {
 	var wg sync.WaitGroup
 	var result int
 	var body map[string]any
@@ -72,7 +72,7 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 		log.Print(err)
 	}
 
-	for _, dest := range neighbors {
+	for _, dest := range s.node.NodeIDs() {
 		if dest == msg.Src || dest == s.node.ID() {
 			continue
 		}
@@ -92,7 +92,7 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 			} else {
 				s.retries <- retry{body: body, dest: dest, attempt: 20, err: err}
 			}
-		}(dest.(string))
+		}(dest)
 	}
 
 	wg.Wait()
