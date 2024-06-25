@@ -13,7 +13,7 @@ import (
 )
 
 type store struct {
-	index map[float64]bool
+	index map[float64]float64
 	log   []float64
 	sync.RWMutex
 }
@@ -50,7 +50,6 @@ func (s *session) topologyHandler(msg maelstrom.Message) error {
 	neighbors = topology[self].([]any)
 
 	return s.node.Reply(msg, map[string]any{"type": "topology_ok"})
-
 }
 
 func (s *session) readHandler(msg maelstrom.Message) error {
@@ -62,17 +61,14 @@ func (s *session) readHandler(msg maelstrom.Message) error {
 	s.store.RLock()
 	defer s.store.RUnlock()
 
-	body["type"] = "read_ok"
-	body["messages"] = s.store.log
-
-	return s.node.Reply(msg, body)
+	return s.node.Reply(msg, map[string]any{"type": "read_ok", "messages": s.store.log})
 }
 
 func (s *session) broadcastHandler(msg maelstrom.Message) error {
 	var wg sync.WaitGroup
 	var body map[string]any
-
 	var store = s.store
+
 	n := s.node
 
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
@@ -83,11 +79,15 @@ func (s *session) broadcastHandler(msg maelstrom.Message) error {
 	exists := store.findOrInsert(key)
 
 	if exists {
-		return nil
+		return s.node.Reply(msg, map[string]any{"type": "broadcast_ok"})
 	}
 
 	for _, dest := range neighbors {
 		wg.Add(1)
+
+		if dest == body["src"] || dest == s.node.ID() {
+			continue
+		}
 
 		go func(dest string) {
 			deadline := time.Now().Add(400 * time.Millisecond)
@@ -107,7 +107,7 @@ func (s *session) broadcastHandler(msg maelstrom.Message) error {
 
 	wg.Wait()
 
-	return s.node.Reply(msg, map[string]any{"type": "broadcast_ok", "msg_id": body["msg_id"]})
+	return s.node.Reply(msg, map[string]any{"type": "broadcast_ok"})
 }
 
 func failureDetector(s *session) {
@@ -115,6 +115,11 @@ func failureDetector(s *session) {
 
 	for r := range s.retries {
 		r := r
+
+		if r.dest == s.node.ID() {
+			continue
+		}
+
 		atttempts.Add(1)
 
 		go func(retry retry, attempts *sync.WaitGroup) {
@@ -150,7 +155,7 @@ func (s *store) findOrInsert(key float64) bool {
 	_, exists := s.index[key]
 
 	if !exists {
-		s.index[key] = true
+		s.index[key] = key
 		s.log = append(s.log, key)
 	}
 
@@ -168,7 +173,7 @@ func main() {
 
 	s := &session{
 		node: n, retries: retries,
-		store: &store{index: map[float64]bool{}, log: []float64{}},
+		store: &store{index: map[float64]float64{}, log: []float64{}},
 	}
 
 	n.Handle("topology", s.topologyHandler)
