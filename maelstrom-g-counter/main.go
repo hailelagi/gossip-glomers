@@ -37,7 +37,9 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 	}
 
 	delta := int(body["delta"].(float64))
-	ctx := context.Background()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Millisecond))
+	defer cancel()
+
 	previous, err := s.kv.Read(ctx, "counter")
 
 	if err != nil {
@@ -46,10 +48,20 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 		result = previous.(int) + delta
 	}
 
-	s.kv.CompareAndSwap(ctx, "counter", previous, result, true)
+	err = s.kv.CompareAndSwap(ctx, "counter", previous, result, true)
 
-	//replicate count... it is assumed each messsage is idempotent
+	if err != nil {
+		log.SetOutput(os.Stderr)
+		log.Print(err)
+	}
+
+	//replicate count... it is assumed each messsage is idempotent via msg_id
+	// NB: we send to **everyone else** to update their counter
 	for _, dest := range s.node.NodeIDs() {
+		if dest == msg.Src || dest == s.node.ID() {
+			continue
+		}
+
 		wg.Add(1)
 
 		go func(dest string) {
@@ -75,7 +87,9 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 
 func (s *session) readOperationHandler(msg maelstrom.Message) error {
 	var body = map[string]any{"type": "read_ok"}
-	ctx := context.Background()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Millisecond))
+	defer cancel()
+
 	count, err := s.kv.ReadInt(ctx, "counter")
 
 	if err != nil {
