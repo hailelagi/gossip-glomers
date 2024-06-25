@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"runtime"
@@ -25,6 +26,22 @@ type retry struct {
 	err     error
 }
 
+var neighbors []any
+
+func (s *session) topologyHandler(msg maelstrom.Message) error {
+	var body = make(map[string]any)
+
+	if err := json.Unmarshal(msg.Body, &body); err != nil {
+		return err
+	}
+
+	self := s.node.ID()
+	topology := body["topology"].(map[string]any)
+	neighbors = topology[self].([]any)
+
+	return s.node.Reply(msg, map[string]any{"type": "topology_ok"})
+}
+
 // the operation is addition and is commutative
 // as it is a counter that only ever grows
 func (s *session) addOperationHandler(msg maelstrom.Message) error {
@@ -40,7 +57,7 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Millisecond))
 	defer cancel()
 
-	previous, err := s.kv.Read(ctx, "counter")
+	previous, err := s.kv.Read(ctx, fmt.Sprint("counter-", s.node.ID()))
 
 	if err != nil {
 		result = 0
@@ -48,16 +65,14 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 		result = previous.(int) + delta
 	}
 
-	err = s.kv.CompareAndSwap(ctx, "counter", previous, result, true)
+	err = s.kv.CompareAndSwap(ctx, fmt.Sprint("counter-", s.node.ID()), previous, result, true)
 
 	if err != nil {
 		log.SetOutput(os.Stderr)
 		log.Print(err)
 	}
 
-	//replicate count... it is assumed each messsage is idempotent via msg_id
-	// NB: we send to **everyone else** to update their counter
-	for _, dest := range s.node.NodeIDs() {
+	for _, dest := range neighbors {
 		if dest == msg.Src || dest == s.node.ID() {
 			continue
 		}
@@ -77,7 +92,7 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 			} else {
 				s.retries <- retry{body: body, dest: dest, attempt: 20, err: err}
 			}
-		}(dest)
+		}(dest.(string))
 	}
 
 	wg.Wait()
@@ -90,7 +105,7 @@ func (s *session) readOperationHandler(msg maelstrom.Message) error {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Millisecond))
 	defer cancel()
 
-	count, err := s.kv.ReadInt(ctx, "counter")
+	count, err := s.kv.ReadInt(ctx, fmt.Sprint("counter-", s.node.ID()))
 
 	if err != nil {
 		count = 0
@@ -143,6 +158,7 @@ func main() {
 		kv: kv,
 	}
 
+	n.Handle("topology", s.topologyHandler)
 	n.Handle("add", s.addOperationHandler)
 	n.Handle("read", s.readOperationHandler)
 
