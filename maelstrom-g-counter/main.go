@@ -26,25 +26,9 @@ type retry struct {
 	err     error
 }
 
-var neighbors []any
-
-func (s *session) topologyHandler(msg maelstrom.Message) error {
-	var body = make(map[string]any)
-
-	if err := json.Unmarshal(msg.Body, &body); err != nil {
-		return err
-	}
-
-	self := s.node.ID()
-	topology := body["topology"].(map[string]any)
-	neighbors = topology[self].([]any)
-
-	return s.node.Reply(msg, map[string]any{"type": "topology_ok"})
-}
-
 // the operation is addition and is commutative
 // as it is a counter that only ever grows
-func (s *session) addOp0erationHandler(msg maelstrom.Message) error {
+func (s *session) addOperationHandler(msg maelstrom.Message) error {
 	var wg sync.WaitGroup
 	var result int
 	var body map[string]any
@@ -158,7 +142,6 @@ func main() {
 		kv: kv,
 	}
 
-	n.Handle("topology", s.topologyHandler)
 	n.Handle("add", s.addOperationHandler)
 	n.Handle("read", s.readOperationHandler)
 
