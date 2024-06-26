@@ -1,6 +1,6 @@
 # gossip-glomers
 
-solving <https://fly.io/dist-sys/>, read about it here: https://www.hailelagi.com/notes/call-me-maybe-lol/
+![fay](./fay.jpeg)
 
 ## Installation
 
