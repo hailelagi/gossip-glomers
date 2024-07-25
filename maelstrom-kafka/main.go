@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"runtime"
 	"sync"
@@ -35,7 +36,7 @@ var neighbors []any
 // the replicated log
 // TODO: how to model offsets in the log?
 // can we just use slice indices?
-var log []map[string]int
+var replicatedLog []map[string]int
 
 func (s *session) topologyHandler(msg maelstrom.Message) error {
 	var body = make(map[string]any)

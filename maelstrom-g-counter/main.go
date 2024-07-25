@@ -145,6 +145,11 @@ func main() {
 	n.Handle("add", s.addOperationHandler)
 	n.Handle("read", s.readOperationHandler)
 
+	/*
+	  n.Handle("add", s.addStateTransformHandler)
+	  n.Handle("read", s.readStateTransformHandler)
+	*/
+
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go failureDetector(s)
 	}
