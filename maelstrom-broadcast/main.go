@@ -13,7 +13,7 @@ import (
 )
 
 type store struct {
-	index map[float64]float64
+	index map[float64]bool
 	log   []float64
 	sync.RWMutex
 }
@@ -78,16 +78,16 @@ func (s *session) broadcastHandler(msg maelstrom.Message) error {
 	key := body["message"].(float64)
 	exists := store.findOrInsert(key)
 
-	if exists {
-		return s.node.Reply(msg, map[string]any{"type": "broadcast_ok"})
-	}
-
 	for _, dest := range neighbors {
-		wg.Add(1)
+		if exists {
+			break
+		}
 
 		if dest == msg.Src || dest == s.node.ID() {
 			continue
 		}
+
+		wg.Add(1)
 
 		go func(dest string) {
 			deadline := time.Now().Add(400 * time.Millisecond)
@@ -116,7 +116,7 @@ func failureDetector(s *session) {
 	for r := range s.retries {
 		r := r
 
-		if r.dest == s.node.ID() {
+		if r.dest == r.body["src"] || r.dest == s.node.ID() {
 			continue
 		}
 
@@ -135,8 +135,9 @@ func failureDetector(s *session) {
 
 				if err == nil {
 					return
+				} else {
+					s.retries <- retry
 				}
-				s.retries <- retry
 
 			} else {
 				log.SetOutput(os.Stderr)
@@ -155,7 +156,7 @@ func (s *store) findOrInsert(key float64) bool {
 	_, exists := s.index[key]
 
 	if !exists {
-		s.index[key] = key
+		s.index[key] = true
 		s.log = append(s.log, key)
 	}
 
@@ -173,7 +174,7 @@ func main() {
 
 	s := &session{
 		node: n, retries: retries,
-		store: &store{index: map[float64]float64{}, log: []float64{}},
+		store: &store{index: map[float64]bool{}, log: []float64{}},
 	}
 
 	n.Handle("topology", s.topologyHandler)
