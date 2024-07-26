@@ -1,14 +1,8 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
 	"log"
 	"os"
-	"runtime"
-	"sync"
-	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
@@ -27,6 +21,7 @@ type retry struct {
 }
 
 /*
+// Operation based transform
 1: payload Payload type; instantiated at all replicas
 2: initial Initial value
 3: query Source-local operation (arguments) : returns
@@ -43,10 +38,13 @@ type retry struct {
 
 // the operation is addition and is commutative
 // as it is a counter that only ever grows
+
+/*
 func (s *session) addOperationHandler(msg maelstrom.Message) error {
 	var wg sync.WaitGroup
 	var result int
 	var body map[string]any
+	var atom sync.Mutex
 
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
@@ -56,6 +54,7 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
 	defer cancel()
 
+	atom.Lock()
 	previous, err := s.kv.Read(ctx, fmt.Sprint("counter-", s.node.ID()))
 
 	if err != nil {
@@ -65,42 +64,17 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 	}
 
 	err = s.kv.CompareAndSwap(ctx, fmt.Sprint("counter-", s.node.ID()), previous, result, true)
+	atom.Unlock()
 
 	if err != nil {
 		log.SetOutput(os.Stderr)
 		log.Print(err)
 	}
 
-	for _, dest := range s.node.NodeIDs() {
-		if dest == msg.Src || dest == s.node.ID() {
-			continue
-		}
-
-		wg.Add(1)
-
-		go func(dest string) {
-			deadline := time.Now().Add(400 * time.Millisecond)
-			ctx, cancel := context.WithDeadline(context.Background(), deadline)
-			defer cancel()
-			defer wg.Done()
-
-			_, err := s.node.SyncRPC(ctx, dest, body)
-
-			if err == nil {
-				return
-			} else {
-				s.retries <- retry{body: body, dest: dest, attempt: 20, err: err}
-			}
-		}(dest)
-	}
-
-	wg.Wait()
-
 	return s.node.Reply(msg, map[string]any{"type": "add_ok"})
 }
 
-var cacheCount int
-
+/*
 func (s *session) readOperationHandler(msg maelstrom.Message) error {
 	var body = map[string]any{"type": "read_ok"}
 	var result int
@@ -109,17 +83,12 @@ func (s *session) readOperationHandler(msg maelstrom.Message) error {
 
 	count, err := s.kv.ReadInt(ctx, fmt.Sprint("counter-", s.node.ID()))
 
-	if err == nil {
-		result = cacheCount
-	} else {
-		cacheCount = count
-		result = count
-	}
-
 	body["value"] = result
 	return s.node.Reply(msg, body)
 }
+*/
 
+/*
 func failureDetector(s *session) {
 	var atttempts sync.WaitGroup
 
@@ -158,6 +127,7 @@ func failureDetector(s *session) {
 
 	atttempts.Wait()
 }
+*/
 
 func main() {
 	n := maelstrom.NewNode()
@@ -169,17 +139,19 @@ func main() {
 		kv: kv,
 	}
 
-	n.Handle("add", s.addOperationHandler)
-	n.Handle("read", s.readOperationHandler)
-
 	/*
-	  n.Handle("add", s.addStateTransformHandler)
-	  n.Handle("read", s.readStateTransformHandler)
+		n.Handle("add", s.addOperationHandler)
+		n.Handle("read", s.readOperationHandler)
 	*/
 
-	for i := 0; i < runtime.NumCPU(); i++ {
-		go failureDetector(s)
-	}
+	n.Handle("add", s.addStateTransformHandler)
+	n.Handle("read", s.readStateTransformHandler)
+
+	/*
+		for i := 0; i < runtime.NumCPU(); i++ {
+			go failureDetector(s)
+		}
+	*/
 
 	// Execute the node's message loop. This will run until STDIN is closed.
 	if err := n.Run(); err != nil {
