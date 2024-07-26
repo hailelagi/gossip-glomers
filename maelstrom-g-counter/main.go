@@ -38,7 +38,7 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 	}
 
 	delta := int(body["delta"].(float64))
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Millisecond))
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
 	defer cancel()
 
 	previous, err := s.kv.Read(ctx, fmt.Sprint("counter-", s.node.ID()))
@@ -84,18 +84,24 @@ func (s *session) addOperationHandler(msg maelstrom.Message) error {
 	return s.node.Reply(msg, map[string]any{"type": "add_ok"})
 }
 
+var cacheCount int
+
 func (s *session) readOperationHandler(msg maelstrom.Message) error {
 	var body = map[string]any{"type": "read_ok"}
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Millisecond))
+	var result int
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
 	defer cancel()
 
 	count, err := s.kv.ReadInt(ctx, fmt.Sprint("counter-", s.node.ID()))
 
-	if err != nil {
-		count = 0
+	if err == nil {
+		result = cacheCount
+	} else {
+		cacheCount = count
+		result = count
 	}
 
-	body["value"] = count
+	body["value"] = result
 	return s.node.Reply(msg, body)
 }
 
@@ -104,6 +110,11 @@ func failureDetector(s *session) {
 
 	for r := range s.retries {
 		r := r
+
+		if r.dest == r.body["src"] || r.dest == s.node.ID() {
+			continue
+		}
+
 		atttempts.Add(1)
 
 		go func(retry retry, attempts *sync.WaitGroup) {
@@ -119,8 +130,9 @@ func failureDetector(s *session) {
 
 				if err == nil {
 					return
+				} else {
+					s.retries <- retry
 				}
-				s.retries <- retry
 
 			} else {
 				log.SetOutput(os.Stderr)
@@ -135,7 +147,7 @@ func failureDetector(s *session) {
 func main() {
 	n := maelstrom.NewNode()
 	kv := maelstrom.NewSeqKV(n)
-	var retries = make(chan retry, 100)
+	var retries = make(chan retry, 1000)
 
 	s := &session{
 		node: n, retries: retries,
