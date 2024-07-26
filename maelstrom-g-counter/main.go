@@ -73,13 +73,14 @@ func main() {
 		kv: kv,
 	}
 
-	/*
-		n.Handle("add", s.addOperationHandler)
-		n.Handle("read", s.readOperationHandler)
-	*/
+	n.Handle("add", s.addOperationHandler)
+	n.Handle("read", s.readOperationHandler)
+	n.Handle("replicate", s.replicateHandler)
 
-	n.Handle("add", s.addStateSeqCstHandler)
-	n.Handle("read", s.readStateSeqCstHandler)
+	/*
+		n.Handle("add", s.addStateSeqCstHandler)
+		n.Handle("read", s.readStateSeqCstHandler)
+	*/
 
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go failureDetector(s)
