@@ -1,26 +1,26 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"os"
-	"runtime"
 	"sync"
-	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-type store struct {
-	index map[float64]bool
-	log   []float64
+// the replicated log
+// TODO: how to model offsets in the log?
+// can we just use slice indices?
+type replicatedLog struct {
+	offset map[float64]bool
+	log    []float64
 	sync.RWMutex
 }
 
 type session struct {
 	node    *maelstrom.Node
-	store   *store
+	log     *replicatedLog
 	retries chan retry
 }
 
@@ -32,11 +32,6 @@ type retry struct {
 }
 
 var neighbors []any
-
-// the replicated log
-// TODO: how to model offsets in the log?
-// can we just use slice indices?
-var replicatedLog []map[string]int
 
 func (s *session) topologyHandler(msg maelstrom.Message) error {
 	var body = make(map[string]any)
@@ -93,46 +88,13 @@ func (s *session) listCommitHandler(msg maelstrom.Message) error {
 	return s.node.Reply(msg, map[string]any{"type": "commit_offsets", "msg_id": body["msg_id"]})
 }
 
-func failureDetector(s *session) {
-	var atttempts sync.WaitGroup
-
-	for r := range s.retries {
-		r := r
-		atttempts.Add(1)
-
-		go func(retry retry, attempts *sync.WaitGroup) {
-			deadline := time.Now().Add(800 * time.Millisecond)
-			ctx, cancel := context.WithDeadline(context.Background(), deadline)
-			defer cancel()
-			defer attempts.Done()
-
-			retry.attempt--
-
-			if retry.attempt >= 0 {
-				_, err := s.node.SyncRPC(ctx, retry.dest, retry.body)
-
-				if err == nil {
-					return
-				}
-				s.retries <- retry
-
-			} else {
-				log.SetOutput(os.Stderr)
-				log.Printf("dead letter message slip loss beyond tolerance %v", retry)
-			}
-		}(r, &atttempts)
-	}
-
-	atttempts.Wait()
-}
-
 func main() {
 	n := maelstrom.NewNode()
 	var retries = make(chan retry, 1000)
 
 	s := &session{
 		node: n, retries: retries,
-		store: &store{index: map[float64]bool{}, log: []float64{}},
+		log: &replicatedLog{offset: map[float64]bool{}, log: []float64{}},
 	}
 
 	n.Handle("topology", s.topologyHandler)
@@ -140,10 +102,6 @@ func main() {
 	n.Handle("poll", s.pollHandler)
 	n.Handle("commit_offsets", s.commitHandler)
 	n.Handle("list_committed_offsets", s.listCommitHandler)
-
-	for i := 0; i < runtime.NumCPU(); i++ {
-		go failureDetector(s)
-	}
 
 	// Execute the node's message loop. This will run until STDIN is closed.
 	if err := n.Run(); err != nil {
