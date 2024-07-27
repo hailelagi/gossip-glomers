@@ -18,12 +18,6 @@ type session struct {
 	retries chan retry
 }
 
-type store struct {
-	index map[int]int
-	log   []float64
-	sync.RWMutex
-}
-
 type retry struct {
 	dest    string
 	body    map[string]any
@@ -31,82 +25,58 @@ type retry struct {
 	err     error
 }
 
-var neighbors []any
-
-func (s *session) topologyHandler(msg maelstrom.Message) error {
-	var body = make(map[string]any)
-
-	if err := json.Unmarshal(msg.Body, &body); err != nil {
-		return err
-	}
-
-	self := s.node.ID()
-	topology := body["topology"].(map[string]any)
-	neighbors = topology[self].([]any)
-
-	return s.node.Reply(msg, map[string]any{"type": "topology_ok"})
-}
-
 func (s *session) transactionHandler(msg maelstrom.Message) error {
-	var wg sync.WaitGroup
+	// var wg sync.WaitGroup
 	var body map[string]any
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
 
-	kv := s.kv
-	n := s.node
+	result := s.kv.newTxn(body["txn"].([]any))
+	// replicateTxnBody := map[string]any{"type": "replicate", "txn": result}
 
-	kv.Lock()
-	defer kv.Unlock()
-
-	txn := body["txn"].([]any)
-	var result = make([][]any, 0)
-
-	for _, op := range txn {
-		op := op.([]any)
-
-		if op[0] == "r" {
-			index := op[1].(float64)
-
-			result = append(result, []any{"r", index, kv.log[int(index)]})
-		} else if op[0] == "w" {
-			index := op[1].(float64)
-			value := op[2].(float64)
-			kv.log[int(index)] = value
-
-			result = append(result, []any{"w", index, kv.log[int(index)]})
-		}
-	}
-
-	for _, dest := range neighbors {
-		if dest == msg.Src || dest == s.node.ID() {
-			continue
-		}
-
-		wg.Add(1)
-
-		go func(dest string) {
-			deadline := time.Now().Add(400 * time.Millisecond)
-			ctx, cancel := context.WithDeadline(context.Background(), deadline)
-			defer cancel()
-			defer wg.Done()
-
-			_, err := n.SyncRPC(ctx, dest, body)
-
-			if err == nil {
-				return
-			} else {
-				s.retries <- retry{body: body, dest: dest, attempt: 20, err: err}
+	/*
+		for _, dest := range s.node.NodeIDs() {
+			if dest == msg.Src || dest == s.node.ID() {
+				continue
 			}
-		}(dest.(string))
-	}
 
-	wg.Wait()
+			wg.Add(1)
+
+			go func(dest string) {
+				deadline := time.Now().Add(400 * time.Millisecond)
+				ctx, cancel := context.WithDeadline(context.Background(), deadline)
+				defer cancel()
+				defer wg.Done()
+
+				_, err := s.node.SyncRPC(ctx, dest, replicateTxnBody)
+
+				if err == nil {
+					return
+				} else {
+					s.retries <- retry{body: replicateTxnBody, dest: dest, attempt: 20, err: err}
+				}
+			}(dest)
+		}
+
+		wg.Wait()
+	*/
 
 	body["txn"] = result
 	body["type"] = "txn_ok"
 	return s.node.Reply(msg, body)
+}
+
+func (s *session) replicateHandler(msg maelstrom.Message) error {
+	var body map[string]any
+	if err := json.Unmarshal(msg.Body, &body); err != nil {
+		return err
+	}
+
+	//txn := body["txn"].([]any)
+	// s.kv.syncTxn(txn)
+
+	return s.node.Reply(msg, map[string]any{"type": "replicate_ok"})
 }
 
 func failureDetector(s *session) {
@@ -156,8 +126,8 @@ func main() {
 		kv:   &store{index: map[int]int{}, log: make([]float64, 1000_000)},
 	}
 
-	n.Handle("topology", s.topologyHandler)
 	n.Handle("txn", s.transactionHandler)
+	n.Handle("replicate", s.replicateHandler)
 
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go failureDetector(s)
