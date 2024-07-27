@@ -9,9 +9,6 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-// the replicated log
-// TODO: how to model offsets in the log?
-// can we just use slice indices?
 type replicatedLog struct {
 	offset map[float64]bool
 	log    []float64
@@ -58,6 +55,7 @@ func (s *session) sendHandler(msg maelstrom.Message) error {
 
 	return s.node.Reply(msg, map[string]any{"type": "send_ok", "msg_id": body["msg_id"]})
 }
+
 func (s *session) pollHandler(msg maelstrom.Message) error {
 	var body map[string]any
 
