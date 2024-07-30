@@ -4,32 +4,28 @@ import (
 	"encoding/json"
 	"log"
 	"os"
-	"sync"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-type replicatedLog struct {
-	offset map[float64]bool
-	log    []float64
-	sync.RWMutex
-}
-
 type session struct {
-	node    *maelstrom.Node
-	log     *replicatedLog
-	retries chan retry
+	node          *maelstrom.Node
+	replicatedLog *replicatedLog
+	// retries       chan retry
 }
 
+/*
 type retry struct {
 	dest    string
 	body    map[string]any
 	attempt int
 	err     error
 }
+*/
 
-var neighbors []any
+// var neighbors []any
 
+/*
 func (s *session) topologyHandler(msg maelstrom.Message) error {
 	var body = make(map[string]any)
 
@@ -43,6 +39,7 @@ func (s *session) topologyHandler(msg maelstrom.Message) error {
 
 	return s.node.Reply(msg, map[string]any{"type": "topology_ok"})
 }
+*/
 
 func (s *session) sendHandler(msg maelstrom.Message) error {
 	var body map[string]any
@@ -51,9 +48,8 @@ func (s *session) sendHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	//log = append(log, body["msg"])
-
-	return s.node.Reply(msg, map[string]any{"type": "send_ok", "msg_id": body["msg_id"]})
+	offset := s.replicatedLog.Write(body["key"], body["msg"])
+	return s.node.Reply(msg, map[string]any{"type": "send_ok", "offset": offset})
 }
 
 func (s *session) pollHandler(msg maelstrom.Message) error {
@@ -63,7 +59,10 @@ func (s *session) pollHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	return s.node.Reply(msg, map[string]any{"type": "poll_ok", "msg_id": body["msg_id"]})
+	offsets := body["offsets"].(map[string]int)
+	msgs := s.replicatedLog.Read(offsets)
+
+	return s.node.Reply(msg, map[string]any{"type": "poll_ok", "msgs": msgs})
 }
 
 func (s *session) commitHandler(msg maelstrom.Message) error {
@@ -88,14 +87,14 @@ func (s *session) listCommitHandler(msg maelstrom.Message) error {
 
 func main() {
 	n := maelstrom.NewNode()
-	var retries = make(chan retry, 1000)
+	// var retries = make(chan retry, 1000)
 
 	s := &session{
-		node: n, retries: retries,
-		log: &replicatedLog{offset: map[float64]bool{}, log: []float64{}},
+		node:          n, // retries: retries,
+		replicatedLog: &replicatedLog{index: map[string]float64{}, log: []any{}},
 	}
 
-	n.Handle("topology", s.topologyHandler)
+	// n.Handle("topology", s.topologyHandler)
 	n.Handle("send", s.sendHandler)
 	n.Handle("poll", s.pollHandler)
 	n.Handle("commit_offsets", s.commitHandler)
