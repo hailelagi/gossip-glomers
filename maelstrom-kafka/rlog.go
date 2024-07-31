@@ -30,8 +30,7 @@ func (l *replicatedLog) Read(offsets map[string]int) [][]int {
 }
 */
 
-/*
-func (l *replicatedLog) Find(key any) any {
+func (l *replicatedLog) Read(key any) any {
 	start, end := 0, len(l.log)-1
 
 	for start <= end {
@@ -48,4 +47,3 @@ func (l *replicatedLog) Find(key any) any {
 
 	return -1
 }
-*/
