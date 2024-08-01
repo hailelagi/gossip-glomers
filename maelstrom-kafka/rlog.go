@@ -11,7 +11,7 @@ type replicatedLog struct {
 }
 
 // Commiting k/v data to the log and returns the last index offset
-func (l *replicatedLog) Write(key, value any) int {
+func (l *replicatedLog) Append(key, value any) int {
 	l.index[key.(string)] = value.(float64)
 
 	event := []any{key, value}
@@ -30,6 +30,7 @@ func (l *replicatedLog) Read(offsets map[string]int) [][]int {
 }
 */
 
+/*
 func (l *replicatedLog) Read(key any) any {
 	start, end := 0, len(l.log)-1
 
@@ -47,3 +48,4 @@ func (l *replicatedLog) Read(key any) any {
 
 	return -1
 }
+*/

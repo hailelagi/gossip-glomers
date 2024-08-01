@@ -48,7 +48,7 @@ func (s *session) sendHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	offset := s.replicatedLog.Write(body["key"], body["msg"])
+	offset := s.replicatedLog.Append(body["key"], body["msg"])
 	return s.node.Reply(msg, map[string]any{"type": "send_ok", "offset": offset})
 }
 
@@ -59,10 +59,10 @@ func (s *session) pollHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	offsets := body["offsets"].(map[string]int)
-	msgs := s.replicatedLog.Read(offsets)
+	// offsets := body["offsets"].(map[string]int)
+	// msgs := s.replicatedLog.Read(offsets)
 
-	return s.node.Reply(msg, map[string]any{"type": "poll_ok", "msgs": msgs})
+	return s.node.Reply(msg, map[string]any{"type": "poll_ok", "msgs": nil})
 }
 
 func (s *session) commitHandler(msg maelstrom.Message) error {
