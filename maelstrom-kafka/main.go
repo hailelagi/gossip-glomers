@@ -46,7 +46,7 @@ func (s *session) hasCommitHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	requestedOffsets := body["offsets"].(map[string]int)
+	requestedOffsets := body["offsets"].(map[string]any)
 	committed := s.log.HasCommitted(requestedOffsets)
 
 	if committed {
