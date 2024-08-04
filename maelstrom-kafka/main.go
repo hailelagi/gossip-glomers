@@ -11,35 +11,7 @@ import (
 type session struct {
 	node          *maelstrom.Node
 	replicatedLog *replicatedLog
-	// retries       chan retry
 }
-
-/*
-type retry struct {
-	dest    string
-	body    map[string]any
-	attempt int
-	err     error
-}
-*/
-
-// var neighbors []any
-
-/*
-func (s *session) topologyHandler(msg maelstrom.Message) error {
-	var body = make(map[string]any)
-
-	if err := json.Unmarshal(msg.Body, &body); err != nil {
-		return err
-	}
-
-	self := s.node.ID()
-	topology := body["topology"].(map[string]any)
-	neighbors = topology[self].([]any)
-
-	return s.node.Reply(msg, map[string]any{"type": "topology_ok"})
-}
-*/
 
 func (s *session) sendHandler(msg maelstrom.Message) error {
 	var body map[string]any
@@ -59,46 +31,57 @@ func (s *session) pollHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	// offsets := body["offsets"].(map[string]int)
-	// msgs := s.replicatedLog.Read(offsets)
+	offsets := body["offsets"].(map[string]any)
+	msgs := s.replicatedLog.Read(offsets)
 
-	return s.node.Reply(msg, map[string]any{"type": "poll_ok", "msgs": nil})
+	return s.node.Reply(msg, map[string]any{"type": "poll_ok", "msgs": msgs})
 }
 
-func (s *session) commitHandler(msg maelstrom.Message) error {
+func (s *session) hasCommitHandler(msg maelstrom.Message) error {
 	var body map[string]any
 
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
 
-	return s.node.Reply(msg, map[string]any{"type": "commit_offsets", "msg_id": body["msg_id"]})
+	requestedOffsets := body["offsets"].(map[string]int)
+	committed := s.replicatedLog.HasCommitted(requestedOffsets)
+
+	if committed {
+		return s.node.Reply(msg, map[string]any{"type": "commit_offsets_ok"})
+	}
+
+	// todo: return error
+	return s.node.Reply(msg, map[string]any{"type": "commit_offsets_ok"})
 }
 
-func (s *session) listCommitHandler(msg maelstrom.Message) error {
+func (s *session) listCommittedHandler(msg maelstrom.Message) error {
 	var body map[string]any
 
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
 
-	return s.node.Reply(msg, map[string]any{"type": "commit_offsets", "msg_id": body["msg_id"]})
+	keys := body["keys"].([]any)
+	committed := s.replicatedLog.listCommitted(keys)
+
+	return s.node.Reply(msg, map[string]any{"type": "list_committed_offsets_ok", "offsets": committed})
 }
 
 func main() {
 	n := maelstrom.NewNode()
-	// var retries = make(chan retry, 1000)
+	replicatedlog := &replicatedLog{index: map[string][]int{}, log: []entry{}}
 
 	s := &session{
-		node:          n, // retries: retries,
-		replicatedLog: &replicatedLog{index: map[string]float64{}, log: []any{}},
+		node:          n,
+		replicatedLog: replicatedlog,
 	}
 
 	// n.Handle("topology", s.topologyHandler)
 	n.Handle("send", s.sendHandler)
 	n.Handle("poll", s.pollHandler)
-	n.Handle("commit_offsets", s.commitHandler)
-	n.Handle("list_committed_offsets", s.listCommitHandler)
+	n.Handle("commit_offsets", s.hasCommitHandler)
+	n.Handle("list_committed_offsets", s.listCommittedHandler)
 
 	// Execute the node's message loop. This will run until STDIN is closed.
 	if err := n.Run(); err != nil {
