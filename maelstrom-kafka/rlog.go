@@ -5,9 +5,25 @@ import (
 )
 
 type replicatedLog struct {
-	index map[string][]int
-	log   []entry
-	sync.RWMutex
+	index  map[string][]int
+	log    []entry
+	pLocks []*sync.RWMutex
+	global sync.RWMutex
+}
+
+func NewLog(partitions int) *replicatedLog {
+	locks := make([]*sync.RWMutex, partitions)
+
+	for i := range locks {
+		locks[i] = &sync.RWMutex{}
+	}
+
+	return &replicatedLog{
+		index:  map[string][]int{},
+		log:    []entry{},
+		pLocks: locks,
+		global: sync.RWMutex{},
+	}
 }
 
 type entry struct {
@@ -83,6 +99,7 @@ func (l *replicatedLog) HasCommitted(offsets map[string]int) bool {
 			if k == offset {
 				IsCommitted = true
 			} else {
+				IsCommitted = false
 				break
 			}
 		}
@@ -91,7 +108,8 @@ func (l *replicatedLog) HasCommitted(offsets map[string]int) bool {
 	return IsCommitted
 }
 
-func (l *replicatedLog) listCommitted(keys []any) map[string]any {
+// ListCommitted returns the last offset for a client
+func (l *replicatedLog) ListCommitted(keys []any) map[string]any {
 	var result = make(map[string]any)
 
 	for _, key := range keys {
@@ -101,7 +119,8 @@ func (l *replicatedLog) listCommitted(keys []any) map[string]any {
 			continue
 		}
 
-		result[key] = l.index[key][0]
+		position := len(l.index[key]) - 1
+		result[key] = l.index[key][position]
 	}
 
 	return result

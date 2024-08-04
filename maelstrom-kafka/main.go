@@ -4,13 +4,15 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"runtime"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
 type session struct {
-	node          *maelstrom.Node
-	replicatedLog *replicatedLog
+	node *maelstrom.Node
+	kv   *maelstrom.KV
+	log  *replicatedLog
 }
 
 func (s *session) sendHandler(msg maelstrom.Message) error {
@@ -20,7 +22,7 @@ func (s *session) sendHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	offset := s.replicatedLog.Append(body["key"], body["msg"])
+	offset := s.log.Append(body["key"], body["msg"])
 	return s.node.Reply(msg, map[string]any{"type": "send_ok", "offset": offset})
 }
 
@@ -32,7 +34,7 @@ func (s *session) pollHandler(msg maelstrom.Message) error {
 	}
 
 	offsets := body["offsets"].(map[string]any)
-	msgs := s.replicatedLog.Read(offsets)
+	msgs := s.log.Read(offsets)
 
 	return s.node.Reply(msg, map[string]any{"type": "poll_ok", "msgs": msgs})
 }
@@ -45,14 +47,13 @@ func (s *session) hasCommitHandler(msg maelstrom.Message) error {
 	}
 
 	requestedOffsets := body["offsets"].(map[string]int)
-	committed := s.replicatedLog.HasCommitted(requestedOffsets)
+	committed := s.log.HasCommitted(requestedOffsets)
 
 	if committed {
 		return s.node.Reply(msg, map[string]any{"type": "commit_offsets_ok"})
 	}
 
-	// todo: return error
-	return s.node.Reply(msg, map[string]any{"type": "commit_offsets_ok"})
+	return nil
 }
 
 func (s *session) listCommittedHandler(msg maelstrom.Message) error {
@@ -63,18 +64,18 @@ func (s *session) listCommittedHandler(msg maelstrom.Message) error {
 	}
 
 	keys := body["keys"].([]any)
-	committed := s.replicatedLog.listCommitted(keys)
+	committed := s.log.ListCommitted(keys)
 
 	return s.node.Reply(msg, map[string]any{"type": "list_committed_offsets_ok", "offsets": committed})
 }
 
 func main() {
 	n := maelstrom.NewNode()
-	replicatedlog := &replicatedLog{index: map[string][]int{}, log: []entry{}}
 
 	s := &session{
-		node:          n,
-		replicatedLog: replicatedlog,
+		node: n,
+		kv:   maelstrom.NewLinKV(n),
+		log:  NewLog(runtime.NumCPU()),
 	}
 
 	// n.Handle("topology", s.topologyHandler)
