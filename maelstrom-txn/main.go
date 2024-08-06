@@ -1,121 +1,29 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"os"
-	"runtime"
-	"sync"
-	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
 type session struct {
-	node    *maelstrom.Node
-	kv      *store
-	retries chan retry
-}
-
-type retry struct {
-	dest    string
-	body    map[string]any
-	attempt int
-	err     error
+	node *maelstrom.Node
+	kv   *store
 }
 
 func (s *session) transactionHandler(msg maelstrom.Message) error {
-	// var wg sync.WaitGroup
 	var body map[string]any
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
 
 	result := s.kv.newTxn(body["txn"].([]any))
-	// replicateTxnBody := map[string]any{"type": "replicate", "txn": result}
-
-	/*
-		for _, dest := range s.node.NodeIDs() {
-			if dest == msg.Src || dest == s.node.ID() {
-				continue
-			}
-
-			wg.Add(1)
-
-			go func(dest string) {
-				deadline := time.Now().Add(400 * time.Millisecond)
-				ctx, cancel := context.WithDeadline(context.Background(), deadline)
-				defer cancel()
-				defer wg.Done()
-
-				_, err := s.node.SyncRPC(ctx, dest, replicateTxnBody)
-
-				if err == nil {
-					return
-				} else {
-					s.retries <- retry{body: replicateTxnBody, dest: dest, attempt: 20, err: err}
-				}
-			}(dest)
-		}
-
-		wg.Wait()
-	*/
 
 	body["txn"] = result
 	body["type"] = "txn_ok"
 	return s.node.Reply(msg, body)
-}
-
-func (s *session) replicateHandler(msg maelstrom.Message) error {
-	var body map[string]any
-	if err := json.Unmarshal(msg.Body, &body); err != nil {
-		return err
-	}
-
-	//txn := body["txn"].([]any)
-	// s.kv.syncTxn(txn)
-
-	return s.node.Reply(msg, map[string]any{"type": "replicate_ok"})
-}
-
-func failureDetector(s *session) {
-	var atttempts sync.WaitGroup
-
-	for r := range s.retries {
-		r := r
-
-		if r.dest == r.body["src"] || r.dest == s.node.ID() {
-			continue
-		}
-
-		atttempts.Add(1)
-
-		go func(retry retry, attempts *sync.WaitGroup) {
-			deadline := time.Now().Add(800 * time.Millisecond)
-			ctx, cancel := context.WithDeadline(context.Background(), deadline)
-			defer cancel()
-			defer attempts.Done()
-
-			retry.attempt--
-
-			if retry.attempt >= 0 {
-				_, err := s.node.SyncRPC(ctx, retry.dest, retry.body)
-
-				if err == nil {
-					return
-				} else {
-					s.retries <- retry
-				}
-
-			} else {
-				log.SetOutput(os.Stderr)
-				log.Printf("dead letter message slip loss beyond tolerance %v", retry)
-			}
-		}(r, &atttempts)
-	}
-
-	atttempts.Wait()
 }
 
 func main() {
@@ -123,15 +31,11 @@ func main() {
 
 	s := &session{
 		node: n,
-		kv:   &store{index: map[int]int{}, log: make([]float64, 1000_000)},
+		kv: &store{index: map[int]int{},
+			log: make([]float64, 1000_000)},
 	}
 
 	n.Handle("txn", s.transactionHandler)
-	n.Handle("replicate", s.replicateHandler)
-
-	for i := 0; i < runtime.NumCPU(); i++ {
-		go failureDetector(s)
-	}
 
 	// Execute the node's message loop. This will run until STDIN is closed.
 	if err := n.Run(); err != nil {
