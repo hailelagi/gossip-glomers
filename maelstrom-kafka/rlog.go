@@ -1,6 +1,9 @@
 package main
 
-import "sync"
+import (
+	"sort"
+	"sync"
+)
 
 type replicatedLog struct {
 	committed map[string]float64
@@ -59,6 +62,7 @@ func (l *replicatedLog) Read(offsets map[string]any) map[string][][]float64 {
 	return result
 }
 
+// Commit ack the last offset a client should read from by the server
 func (l *replicatedLog) Commit(offsets map[string]any) {
 	l.global.Lock()
 	defer l.global.Unlock()
@@ -68,6 +72,7 @@ func (l *replicatedLog) Commit(offsets map[string]any) {
 	}
 }
 
+// ListCommited view the current committed offsets ack'd by the server
 func (l *replicatedLog) ListCommitted(keys []any) map[string]any {
 	l.global.RLock()
 	defer l.global.RUnlock()
@@ -85,12 +90,16 @@ func (l *replicatedLog) ListCommitted(keys []any) map[string]any {
 func (l *replicatedLog) seek(key string, beginIdx int) [][]float64 {
 	var result [][]float64
 
-	for _, offset := range l.version[key] {
-		if offset >= beginIdx {
-			entry := l.log[offset-1]
+	history := l.version[key]
+	start := sort.Search(len(history), func(i int) bool {
+		return history[i] >= beginIdx
+	})
 
-			result = append(result, []float64{float64(offset), entry.value})
-		}
+	for i := start; i <= len(history)-1; i++ {
+		offset := history[i]
+		entry := l.log[offset-1]
+
+		result = append(result, []float64{float64(offset), entry.value})
 	}
 
 	return result
