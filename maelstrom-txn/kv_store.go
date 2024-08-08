@@ -1,17 +1,11 @@
 package main
 
-import "sync"
-
 type store struct {
 	index map[int]int
 	log   []float64
-	sync.RWMutex
 }
 
 func (kv *store) newTxn(txn []any) [][]any {
-	kv.Lock()
-	defer kv.Unlock()
-
 	var result = make([][]any, 0)
 
 	for _, op := range txn {
@@ -34,9 +28,6 @@ func (kv *store) newTxn(txn []any) [][]any {
 }
 
 func (kv *store) syncTxn(txn []any) {
-	kv.Lock()
-	defer kv.Unlock()
-
 	for _, op := range txn {
 		op := op.([]any)
 
