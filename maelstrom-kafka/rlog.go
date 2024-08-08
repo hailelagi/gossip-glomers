@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"sort"
 	"sync"
+	"time"
+
+	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
 type replicatedLog struct {
@@ -14,8 +18,9 @@ type replicatedLog struct {
 }
 
 type entry struct {
-	key   string
-	value float64
+	key    string
+	value  float64
+	offset float64
 }
 
 func NewLog(partitions int) *replicatedLog {
@@ -28,24 +33,52 @@ func NewLog(partitions int) *replicatedLog {
 	return &replicatedLog{
 		committed: map[string]float64{},
 		version:   map[string][]int{},
-		log:       []entry{},
+		log:       make([]entry, 1_000_000),
 		pLocks:    locks,
 		global:    sync.RWMutex{},
 	}
 }
 
+// This is ineffcient. In a real implementation
+// this would be a CAS against an atomic pointer or an atomic CoW memswap
+// for simplicity and sanity, a simple mutual exclusion lock is used
+// obviously this contends the local lock on this service.
 // Append a k/v entry to the log and returns the last index offset
-func (l *replicatedLog) Append(key, value any) int {
+func (l *replicatedLog) Append(kv *maelstrom.KV, key, value any) int {
 	l.global.Lock()
 	defer l.global.Unlock()
 
-	offset := len(l.log) + 1
+	offset := l.acquireLease(kv)
+	k, v := key.(string), value.(float64)
+	event := entry{key: k, value: v, offset: float64(offset)}
 
-	event := entry{key: key.(string), value: value.(float64)}
-	l.log = append(l.log, event)
+	l.log[offset] = event
 	l.version[key.(string)] = append(l.version[key.(string)], offset)
 
 	return offset
+}
+
+func (l *replicatedLog) acquireLease(kv *maelstrom.KV) int {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
+	var count int
+	defer cancel()
+
+	previous, _ := kv.Read(ctx, "monotonic-counter")
+
+	if previous == nil {
+		previous = 0
+		count = 1
+	} else {
+		count = previous.(int) + 1
+	}
+
+	err := kv.CompareAndSwap(ctx, "monotonic-counter", previous, count, true)
+
+	if err == nil {
+		return count
+	} else {
+		return previous.(int)
+	}
 }
 
 // Read messages from a set of logs starting from the given offset in each log
@@ -63,25 +96,37 @@ func (l *replicatedLog) Read(offsets map[string]any) map[string][][]float64 {
 }
 
 // Commit ack the last offset a client should read from by the server
-func (l *replicatedLog) Commit(offsets map[string]any) {
+func (l *replicatedLog) Commit(kv *maelstrom.KV, offsets map[string]any) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
 	l.global.Lock()
 	defer l.global.Unlock()
+	defer cancel()
 
 	for key, offset := range offsets {
 		l.committed[key] = offset.(float64)
+		kv.Write(ctx, key, offset)
 	}
 }
 
 // ListCommited view the current committed offsets ack'd by the server
-func (l *replicatedLog) ListCommitted(keys []any) map[string]any {
-	l.global.RLock()
-	defer l.global.RUnlock()
+func (l *replicatedLog) ListCommitted(kv *maelstrom.KV, keys []any) map[string]any {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
+	l.global.Lock()
+	defer l.global.Unlock()
+	defer cancel()
 
 	var offsets = make(map[string]any)
 
 	for _, key := range keys {
 		key := key.(string)
-		offsets[key] = l.committed[key]
+		lastCommitted, _ := kv.Read(ctx, key)
+
+		if lastCommitted == nil {
+			continue
+		} else {
+			l.committed[key] = float64(lastCommitted.(int))
+			offsets[key] = float64(lastCommitted.(int))
+		}
 	}
 
 	return offsets
@@ -97,7 +142,7 @@ func (l *replicatedLog) seek(key string, beginIdx int) [][]float64 {
 
 	for i := start; i <= len(history)-1; i++ {
 		offset := history[i]
-		entry := l.log[offset-1]
+		entry := l.log[offset]
 
 		result = append(result, []float64{float64(offset), entry.value})
 	}

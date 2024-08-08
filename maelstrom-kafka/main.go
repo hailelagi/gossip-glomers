@@ -22,7 +22,7 @@ func (s *session) sendHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	offset := s.log.Append(body["key"], body["msg"])
+	offset := s.log.Append(s.kv, body["key"], body["msg"])
 	return s.node.Reply(msg, map[string]any{"type": "send_ok", "offset": offset})
 }
 
@@ -44,7 +44,7 @@ func (s *session) CommitOffsetsHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	s.log.Commit(body["offsets"].(map[string]any))
+	s.log.Commit(s.kv, body["offsets"].(map[string]any))
 	return s.node.Reply(msg, map[string]any{"type": "commit_offsets_ok"})
 }
 
@@ -55,7 +55,7 @@ func (s *session) listCommittedHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	offsets := s.log.ListCommitted(body["keys"].([]any))
+	offsets := s.log.ListCommitted(s.kv, body["keys"].([]any))
 	return s.node.Reply(msg, map[string]any{"type": "list_committed_offsets_ok", "offsets": offsets})
 }
 
