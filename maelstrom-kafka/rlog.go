@@ -26,6 +26,9 @@ type entry struct {
 func NewLog(partitions int) *replicatedLog {
 	locks := make([]*sync.RWMutex, partitions)
 
+	// todo(optimization): implement partitions
+	// using a consistent hashing algorithm over entry key per len(nodes)
+	// or more simply randomize
 	for i := range locks {
 		locks[i] = &sync.RWMutex{}
 	}
@@ -33,9 +36,10 @@ func NewLog(partitions int) *replicatedLog {
 	return &replicatedLog{
 		committed: map[string]float64{},
 		version:   map[string][]int{},
-		log:       make([]entry, 1_000_000),
-		pLocks:    locks,
-		global:    sync.RWMutex{},
+		// this will explode past a million entries, probably not a good idea
+		log:    make([]entry, 1_000_000),
+		pLocks: locks,
+		global: sync.RWMutex{},
 	}
 }
 
@@ -44,11 +48,10 @@ func NewLog(partitions int) *replicatedLog {
 // for simplicity and sanity, a simple mutual exclusion lock is used
 // obviously this contends the local lock on this service.
 // Append a k/v entry to the log and returns the last index offset
-func (l *replicatedLog) Append(kv *maelstrom.KV, key, value any) int {
+func (l *replicatedLog) Append(offset int, key, value any) int {
 	l.global.Lock()
 	defer l.global.Unlock()
 
-	offset := l.acquireLease(kv)
 	k, v := key.(string), value.(float64)
 	event := entry{key: k, value: v, offset: float64(offset)}
 
