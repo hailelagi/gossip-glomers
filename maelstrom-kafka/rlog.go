@@ -38,8 +38,10 @@ func NewLog(partitions int) *replicatedLog {
 	return &replicatedLog{
 		committed: map[string]float64{},
 		version:   map[string][]int{},
-		// this will explode past a million entries, probably not a good idea
-		log:    make([]entry, 1_000_000),
+		// this will explode past, probably not a good idea
+		// at some point, compaction should kick in, or instead of preallocating
+		// the offsets are mapped and appended
+		log:    make([]entry, 10_000_000),
 		global: sync.RWMutex{},
 	}
 }
@@ -71,6 +73,8 @@ func (l *replicatedLog) acquireLease(kv *maelstrom.KV) int {
 
 	err := errors.New("busy wait")
 
+	// without a consistently reachable k/v store the protocol breaks down
+	// and cannot make progress
 	for err != nil {
 		previous, _ := kv.Read(ctx, "monotonic-counter")
 
@@ -89,8 +93,8 @@ func (l *replicatedLog) acquireLease(kv *maelstrom.KV) int {
 
 // Read messages from a set of logs starting from the given offset in each log
 func (l *replicatedLog) Read(offsets map[string]any) map[string][][]float64 {
-	l.global.RLock()
-	defer l.global.RUnlock()
+	l.global.Lock()
+	defer l.global.Unlock()
 
 	var result = make(map[string][][]float64)
 
@@ -103,38 +107,24 @@ func (l *replicatedLog) Read(offsets map[string]any) map[string][][]float64 {
 
 // Commit ack the last offset a client should read from by the server
 func (l *replicatedLog) Commit(kv *maelstrom.KV, offsets map[string]any) {
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
 	l.global.Lock()
 	defer l.global.Unlock()
-	defer cancel()
 
 	for key, offset := range offsets {
-		err := kv.Write(ctx, key, offset)
-
-		if err == nil {
-			l.committed[key] = offset.(float64)
-		}
+		l.committed[key] = offset.(float64)
 	}
 }
 
 // ListCommited view the current committed offsets ack'd by the server
-func (l *replicatedLog) ListCommitted(kv *maelstrom.KV, keys []any) map[string]any {
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
-	l.global.Lock()
-	defer l.global.Unlock()
-	defer cancel()
+func (l *replicatedLog) ListCommitted(keys []any) map[string]any {
+	l.global.RLock()
+	defer l.global.RUnlock()
 
 	var offsets = make(map[string]any)
 
 	for _, key := range keys {
 		key := key.(string)
-		lastCommitted, _ := kv.Read(ctx, key)
-
-		if lastCommitted == nil {
-			continue
-		} else {
-			offsets[key] = float64(lastCommitted.(int))
-		}
+		offsets[key] = l.committed[key]
 	}
 
 	return offsets
@@ -142,8 +132,11 @@ func (l *replicatedLog) ListCommitted(kv *maelstrom.KV, keys []any) map[string]a
 
 func (l *replicatedLog) seek(key string, beginIdx int) [][]float64 {
 	var result [][]float64
-
 	history := l.version[key]
+
+	// concurrent out of order updates messup the cache's history
+	sort.Ints(history)
+
 	start := sort.Search(len(history), func(i int) bool {
 		return history[i] >= beginIdx
 	})
