@@ -13,8 +13,8 @@ type replicatedLog struct {
 	committed map[string]float64
 	version   map[string][]int
 	log       []entry
-	pLocks    []*sync.RWMutex
-	global    sync.RWMutex
+	// pLocks    []*sync.RWMutex
+	global sync.RWMutex
 }
 
 type entry struct {
@@ -24,21 +24,20 @@ type entry struct {
 }
 
 func NewLog(partitions int) *replicatedLog {
-	locks := make([]*sync.RWMutex, partitions)
-
-	// todo(optimization): implement partitions
+	// todo(optimization): implement available partitions
 	// using a consistent hashing algorithm over entry key per len(nodes)
 	// or more simply randomize
-	for i := range locks {
-		locks[i] = &sync.RWMutex{}
-	}
+	/*
+			for i := range locks {
+			locks[i] = &sync.RWMutex{}
+		}
+	*/
 
 	return &replicatedLog{
 		committed: map[string]float64{},
 		version:   map[string][]int{},
 		// this will explode past a million entries, probably not a good idea
 		log:    make([]entry, 1_000_000),
-		pLocks: locks,
 		global: sync.RWMutex{},
 	}
 }
@@ -106,8 +105,11 @@ func (l *replicatedLog) Commit(kv *maelstrom.KV, offsets map[string]any) {
 	defer cancel()
 
 	for key, offset := range offsets {
-		l.committed[key] = offset.(float64)
-		kv.Write(ctx, key, offset)
+		err := kv.Write(ctx, key, offset)
+
+		if err == nil {
+			l.committed[key] = offset.(float64)
+		}
 	}
 }
 
@@ -127,7 +129,6 @@ func (l *replicatedLog) ListCommitted(kv *maelstrom.KV, keys []any) map[string]a
 		if lastCommitted == nil {
 			continue
 		} else {
-			l.committed[key] = float64(lastCommitted.(int))
 			offsets[key] = float64(lastCommitted.(int))
 		}
 	}

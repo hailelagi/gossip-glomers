@@ -26,9 +26,11 @@ type retry struct {
 	err     error
 }
 
+// MUST BE: Sequentially Consistent
 func (s *session) sendHandler(msg maelstrom.Message) error {
 	var body map[string]any
 	var wg sync.WaitGroup
+	var atttempts sync.WaitGroup
 
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
@@ -63,9 +65,21 @@ func (s *session) sendHandler(msg maelstrom.Message) error {
 
 	wg.Wait()
 
+	// we must ensure this write broadcast is atomic and replicated to a quorum
+	// for real kafka this is the ISR quorum, for me, this is 2/2 eazy peasy
+	for r := range s.retries {
+		r := r
+
+		atttempts.Add(1)
+		rebroadcast(s, r, &atttempts)
+	}
+
+	atttempts.Wait()
+
 	return s.node.Reply(msg, map[string]any{"type": "send_ok", "offset": offset})
 }
 
+// In a FIFO atomic broadcast we must loop back to ourself
 func (s *session) replicateHandler(msg maelstrom.Message) error {
 	var body map[string]any
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
@@ -78,6 +92,7 @@ func (s *session) replicateHandler(msg maelstrom.Message) error {
 	return s.node.Reply(msg, map[string]any{"type": "replicate_ok"})
 }
 
+// MUST BE: Sequentially Consistent, we can't observe state backwards
 func (s *session) pollHandler(msg maelstrom.Message) error {
 	var body map[string]any
 
@@ -89,6 +104,7 @@ func (s *session) pollHandler(msg maelstrom.Message) error {
 	return s.node.Reply(msg, map[string]any{"type": "poll_ok", "msgs": msgs})
 }
 
+// MUST BE: Sequentially Consistent
 func (s *session) CommitOffsetsHandler(msg maelstrom.Message) error {
 	var body map[string]any
 
@@ -100,6 +116,7 @@ func (s *session) CommitOffsetsHandler(msg maelstrom.Message) error {
 	return s.node.Reply(msg, map[string]any{"type": "commit_offsets_ok"})
 }
 
+// MUST BE: linearizable
 func (s *session) listCommittedHandler(msg maelstrom.Message) error {
 	var body map[string]any
 
@@ -111,43 +128,29 @@ func (s *session) listCommittedHandler(msg maelstrom.Message) error {
 	return s.node.Reply(msg, map[string]any{"type": "list_committed_offsets_ok", "offsets": offsets})
 }
 
-func failureDetector(s *session) {
-	var atttempts sync.WaitGroup
+func rebroadcast(s *session, retry retry, attempts *sync.WaitGroup) error {
+	deadline := time.Now().Add(400 * time.Millisecond)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
 
-	for r := range s.retries {
-		r := r
+	retry.attempt--
 
-		if r.dest == r.body["src"] || r.dest == s.node.ID() {
-			continue
+	if retry.attempt >= 0 {
+		_, err := s.node.SyncRPC(ctx, retry.dest, retry.body)
+
+		if err == nil {
+			attempts.Done()
+			return nil
+		} else {
+			s.retries <- retry
 		}
 
-		atttempts.Add(1)
-
-		go func(retry retry, attempts *sync.WaitGroup) {
-			deadline := time.Now().Add(800 * time.Millisecond)
-			ctx, cancel := context.WithDeadline(context.Background(), deadline)
-			defer cancel()
-			defer attempts.Done()
-
-			retry.attempt--
-
-			if retry.attempt >= 0 {
-				_, err := s.node.SyncRPC(ctx, retry.dest, retry.body)
-
-				if err == nil {
-					return
-				} else {
-					s.retries <- retry
-				}
-
-			} else {
-				log.SetOutput(os.Stderr)
-				log.Printf("dead letter message slip loss beyond tolerance %v", retry)
-			}
-		}(r, &atttempts)
+	} else {
+		log.SetOutput(os.Stderr)
+		log.Printf("lost write, overflown buffer %v", retry)
 	}
 
-	atttempts.Wait()
+	return retry.err
 }
 
 func main() {
@@ -164,10 +167,6 @@ func main() {
 	n.Handle("poll", s.pollHandler)
 	n.Handle("commit_offsets", s.CommitOffsetsHandler)
 	n.Handle("list_committed_offsets", s.listCommittedHandler)
-
-	for i := 0; i < runtime.NumCPU(); i++ {
-		go failureDetector(s)
-	}
 
 	// Execute the node's message loop. This will run until STDIN is closed.
 	if err := n.Run(); err != nil {
