@@ -30,7 +30,7 @@ type retry struct {
 func (s *session) sendHandler(msg maelstrom.Message) error {
 	var body map[string]any
 	var wg sync.WaitGroup
-	var atttempts sync.WaitGroup
+	// var atttempts sync.WaitGroup
 
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
@@ -65,16 +65,20 @@ func (s *session) sendHandler(msg maelstrom.Message) error {
 
 	wg.Wait()
 
-	// we must ensure this write broadcast is atomic and replicated to a quorum
-	// for real kafka this is the ISR quorum, for me, this is 2/2 eazy peasy
-	for r := range s.retries {
-		r := r
+	/*
+		THE BUG IS HERE!!
+			// we must ensure this write broadcast is atomic and replicated to a quorum
+			// for real kafka this is the ISR quorum, for me, this is 2/2 eazy peasy
+			for r := range s.retries {
+				r := r
 
-		atttempts.Add(1)
-		rebroadcast(s, r, &atttempts)
-	}
+				atttempts.Add(1)
+				go rebroadcast(s, r, &atttempts)
+			}
 
-	atttempts.Wait()
+			atttempts.Wait()
+
+	*/
 
 	return s.node.Reply(msg, map[string]any{"type": "send_ok", "offset": offset})
 }

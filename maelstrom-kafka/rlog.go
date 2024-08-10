@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -28,9 +29,10 @@ func NewLog(partitions int) *replicatedLog {
 	// using a consistent hashing algorithm over entry key per len(nodes)
 	// or more simply randomize
 	/*
+		    i := k % n.nodeID()
 			for i := range locks {
-			locks[i] = &sync.RWMutex{}
-		}
+				locks[i] = &sync.RWMutex{}
+			}
 	*/
 
 	return &replicatedLog{
@@ -61,26 +63,28 @@ func (l *replicatedLog) Append(offset int, key, value any) int {
 }
 
 func (l *replicatedLog) acquireLease(kv *maelstrom.KV) int {
+	l.global.Lock()
+	defer l.global.Unlock()
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(400*time.Millisecond))
 	var count int
 	defer cancel()
 
-	previous, _ := kv.Read(ctx, "monotonic-counter")
+	err := errors.New("busy wait")
 
-	if previous == nil {
-		previous = 0
-		count = 1
-	} else {
-		count = previous.(int) + 1
+	for err != nil {
+		previous, _ := kv.Read(ctx, "monotonic-counter")
+
+		if previous == nil {
+			previous = 0
+			count = 1
+		} else {
+			count = previous.(int) + 1
+		}
+
+		err = kv.CompareAndSwap(ctx, "monotonic-counter", previous, count, true)
 	}
 
-	err := kv.CompareAndSwap(ctx, "monotonic-counter", previous, count, true)
-
-	if err == nil {
-		return count
-	} else {
-		return previous.(int)
-	}
+	return count
 }
 
 // Read messages from a set of logs starting from the given offset in each log
