@@ -32,13 +32,7 @@ func (s *session) transactionHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	result := s.kv.newTxn(body["txn"].([]any))
-
 	for _, dest := range s.node.NodeIDs() {
-		if dest == msg.Src || dest == s.node.ID() {
-			continue
-		}
-
 		wg.Add(1)
 
 		go func(dest string) {
@@ -61,7 +55,17 @@ func (s *session) transactionHandler(msg maelstrom.Message) error {
 
 	wg.Wait()
 
-	body["txn"] = result
+	if len(s.retries) > 0 {
+		return s.node.Reply(
+			msg,
+			map[string]any{
+				"type": "error",
+				"code": maelstrom.TxnConflict,
+				"text": "txn abort",
+			},
+		)
+	}
+
 	body["type"] = "txn_ok"
 	return s.node.Reply(msg, body)
 }
@@ -72,7 +76,7 @@ func (s *session) replicateHandler(msg maelstrom.Message) error {
 		return err
 	}
 
-	s.kv.newTxn(body["txn"].([]any))
+	s.kv.Commit(body["txn"].([]any))
 	return s.node.Reply(msg, map[string]any{"type": "replicate_ok"})
 }
 
