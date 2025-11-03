@@ -3,18 +3,24 @@
   (:gen-class))
 
 (defn reply [req body]
-  (let [msg (assoc body
-                   :src (:dest req)
-                   :dest (:src req)
-                   :in_reply_to (:msg_id (:body req)))]
+  (let [msg {:src  (:dest req)
+             :dest (:src req)
+             :body (assoc body
+                          :in_reply_to (:msg_id (:body req)))}]
     (println (json/generate-string msg))))
 
 (defn handle-message [req]
-  (let [{:keys [type]} (:body req)]
+  (let [{:keys [type msg_id]} (:body req)]
     (case type
-      ; TODO: handle init {:type "init_ok", :src nil, :dest nil, :in_reply_to nil, :body {}} ??
-      "init" (reply nil {:type "init_ok"})
-      "echo" (reply req {:type "echo_ok"})
+      "init"
+      (let [resp {:src  (:dest req)
+                  :dest (:src req)
+                  :body {:type "init_ok" :in_reply_to msg_id}}]
+        (println (json/generate-string resp)))
+
+      "echo"
+      (reply req {:type "echo_ok" :echo (:echo (:body req))})
+
       (reply req {:type "error" :code 10 :text (str "unknown type " type)}))))
 
 (defn -main [& _]
@@ -23,3 +29,4 @@
       (let [req (json/parse-string line true)]
         (handle-message req)
         (recur)))))
+
