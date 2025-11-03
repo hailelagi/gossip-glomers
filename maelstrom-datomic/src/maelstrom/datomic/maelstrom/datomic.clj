@@ -18,8 +18,8 @@
                   :body {:type "init_ok" :in_reply_to msg_id}}]
         (println (json/generate-string resp)))
 
-      "echo"
-      (reply req {:type "echo_ok" :echo (:echo (:body req))})
+      "txn"
+      (reply req {:type "txn_ok" :txn (:txn (:body req))})
 
       (reply req {:type "error" :code 10 :text (str "unknown type " type)}))))
 
@@ -29,4 +29,3 @@
       (let [req (json/parse-string line true)]
         (handle-message req)
         (recur)))))
-

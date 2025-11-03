@@ -5,7 +5,7 @@
 echo "building the uber jar file.."
 clj -T:build uber && echo "target built! running maelstrom..." && \
 ../maelstrom/maelstrom test \
-  -w echo \
+  -w txn-list-append \
   --bin "./run-node.sh" \
-  --node-count 1 \
-  --time-limit 10
+  --time-limit 10 \
+  --log-stderr --node-count 1
